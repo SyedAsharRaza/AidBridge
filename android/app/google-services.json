@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "505936872011",
+    "project_id": "aidbridge-7a913",
+    "storage_bucket": "aidbridge-7a913.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:505936872011:android:ec1e76a492191a1b2683ce",
+        "android_client_info": {
+          "package_name": "com.aidbridge.aidbridge"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBuJlBH81gEPeuMesf8n7ZtmPQfxxbea94"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
