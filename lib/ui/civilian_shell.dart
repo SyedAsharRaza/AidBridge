@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../app/mesh.dart';
 import '../protocol/packet.dart';
 import 'alerts_screen.dart';
@@ -16,8 +17,8 @@ class CivilianShell extends ConsumerStatefulWidget {
 
 class _CivilianShellState extends ConsumerState<CivilianShell> with SingleTickerProviderStateMixin {
   late final TabController _tabs = TabController(length: 3, vsync: this);
-  String? _shownAlertId;
-  bool _alertOpen = false; // one takeover at a time — never stack dialogs on a burst
+  bool _alertOpen = false; // ONE takeover for a whole burst — it re-renders per queued victim
+  BuildContext? _alertCtx;  // the takeover's own route context, so a remote resolve can close it
 
   @override
   void initState() {
@@ -30,10 +31,17 @@ class _CivilianShellState extends ConsumerState<CivilianShell> with SingleTicker
   @override
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
-    final alert = ref.watch(meshProvider.select((m) => m.alertPacket));
-    if (alert != null && alert.id != _shownAlertId && !_alertOpen) {
-      _shownAlertId = alert.id;
-      WidgetsBinding.instance.addPostFrameCallback((_) => _showTakeover(alert));
+    // ONE dialog serves the whole queue: it re-renders itself for each victim in turn, so
+    // we neither stack modals on a panicking user nor silently drop the second alarm.
+    final hasAlert = ref.watch(meshProvider.select((m) => m.alertQueue.isNotEmpty));
+    if (hasAlert && !_alertOpen) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _showTakeover());
+    }
+    // The queue emptied (last one acknowledged, or every sender resolved remotely).
+    // showDialog is imperative — clearing state does NOT close it — so the screaming
+    // screen would stay up over a resolved emergency until someone tapped it.
+    if (!hasAlert && _alertOpen) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _closeTakeover());
     }
     return Scaffold(
       appBar: AppBar(
@@ -48,17 +56,36 @@ class _CivilianShellState extends ConsumerState<CivilianShell> with SingleTicker
     );
   }
 
-  void _showTakeover(AidPacket p) {
-    final s = ref.read(stringsProvider);
+  /// Closes the takeover from OUTSIDE (queue emptied). Pops the dialog's own route
+  /// rather than the top of the stack, so we can never pop a screen we did not open.
+  void _closeTakeover() {
+    final ctx = _alertCtx;
+    if (!_alertOpen || ctx == null || !ctx.mounted) return;
+    Navigator.of(ctx).pop();
+  }
+
+  void _showTakeover() {
     _alertOpen = true;
     showDialog(context: context, barrierDismissible: false, barrierColor: const Color(0xF2120506),
-      builder: (ctx) => Dialog.fullscreen(backgroundColor: Colors.transparent,
-        child: Padding(padding: const EdgeInsets.all(24),
+      builder: (ctx) {
+        _alertCtx = ctx;
+        return Dialog.fullscreen(backgroundColor: Colors.transparent,
+          child: Consumer(builder: (c, r, _) {
+            final s = r.watch(stringsProvider);
+            final q = r.watch(meshProvider.select((m) => m.alertQueue));
+            if (q.isEmpty) return const SizedBox.shrink(); // emptied; the pop lands next frame
+            final p = q.first;
+            final more = q.length - 1;
+            return Padding(padding: const EdgeInsets.all(24),
           child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
             const Icon(Icons.warning_amber_rounded, color: AC.sos, size: 110),
             const SizedBox(height: 8),
             Text('🆘 ${s.incomingSos}', textAlign: TextAlign.center,
                 style: const TextStyle(color: AC.sos, fontSize: 30, fontWeight: FontWeight.w900, letterSpacing: 1)),
+            // Tell the user more people are waiting, so acknowledging never feels like dismissing.
+            if (more > 0) Padding(padding: const EdgeInsets.only(top: 6),
+                child: Text('1 / ${q.length}',
+                    style: const TextStyle(color: AC.primary, fontSize: 16, fontWeight: FontWeight.w800))),
             const SizedBox(height: 14),
             Text(p.senderName, style: const TextStyle(color: AC.text, fontSize: 24, fontWeight: FontWeight.w700)),
             Text('${catIcon(p.category)} ${catName(s, p.category)}  •  ${s.viaPhones} ${p.hops} ${s.seenByN}',
@@ -73,20 +100,25 @@ class _CivilianShellState extends ConsumerState<CivilianShell> with SingleTicker
             const SizedBox(height: 28),
             FilledButton(
               style: FilledButton.styleFrom(backgroundColor: AC.primary),
-              onPressed: () => Navigator.of(ctx).pop(), // silencing happens on the ONE exit path below
-              child: Text(s.stopSiren),
+              // Acknowledge THIS victim only. If others wait the siren keeps going and the
+              // next one renders in place; on the last, the queue empties and we close.
+              onPressed: () => r.read(meshProvider.notifier).dismissAlert(p.id),
+              child: Text(more > 0 ? '${s.nextAlert} ($more)' : s.stopSiren),
             ),
           ]),
-        ),
-      ),
+        );
+          }),
+      );
+      },
     ).then((_) {
       _alertOpen = false;
-      // ONE EXIT PATH: the button AND the system back gesture both land here, so a
-      // back-swipe can never leave the siren screaming with no way to silence it.
-      // stopSiren() also clears alertPacket, which is what stops the takeover from
-      // re-opening on the next rebuild. (_shownAlertId is deliberately NOT reset:
-      // one takeover per packet id, forever.)
-      ref.read(meshProvider.notifier).stopSiren();
+      _alertCtx = null;
+      // ONE EXIT PATH: the system back gesture lands here too. If anything is still queued
+      // the takeover is gone but the siren would keep screaming with no visible control,
+      // so backing out of a burst means silence everything.
+      if (ref.read(meshProvider).alertQueue.isNotEmpty) {
+        ref.read(meshProvider.notifier).stopSiren();
+      }
     });
   }
 }
@@ -97,3 +129,17 @@ String catIcon(SosCategory? c) => switch (c) {
 String catName(S s, SosCategory? c) => switch (c) {
   SosCategory.medical => s.catMedical, SosCategory.waterFood => s.catWater,
   SosCategory.rescue => s.catRescue, SosCategory.custom => s.catCustom, _ => s.catRescue };
+
+/// CALL is the most consequential button in the app. launchUrl THROWS when nothing can
+/// handle tel: (tablets, stripped ROMs) and that used to be an unhandled async error: the
+/// rescuer tapped, nothing happened, and nothing explained why. Fail out loud, and always
+/// keep the number on screen so it can still be dialled by hand.
+Future<void> dialPhone(BuildContext context, String phone) async {
+  final messenger = ScaffoldMessenger.of(context); // captured BEFORE the await
+  try {
+    if (await launchUrl(Uri.parse('tel:$phone'))) return;
+    messenger.showSnackBar(SnackBar(content: Text('No dialer on this device — number: $phone')));
+  } catch (_) {
+    messenger.showSnackBar(SnackBar(content: Text('Could not open the dialer — number: $phone')));
+  }
+}

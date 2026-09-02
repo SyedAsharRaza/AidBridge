@@ -19,10 +19,24 @@ class _SosScreenState extends ConsumerState<SosScreen> {
   double _hold = 0; Timer? _holdTimer; bool _fired = false;
   static const _holdMs = 1200; // press-and-hold LAW: no accidental disaster sirens
 
+  @override
+  void dispose() {
+    // A periodic timer that outlives its State calls setState() on every tick forever.
+    _holdTimer?.cancel();
+    super.dispose();
+  }
+
   void _startHold() {
     _fired = false;
     _holdTimer = Timer.periodic(const Duration(milliseconds: 40), (t) {
-      setState(() { _hold += 40 / _holdMs; if (_hold >= 1 && !_fired) { _fired = true; _hold = 0; t.cancel(); HapticFeedback.heavyImpact(); _pickCategory(); } });
+      if (_fired) return;
+      final next = _hold + 40 / _holdMs;
+      if (next < 1) { setState(() => _hold = next); return; }
+      _fired = true;
+      t.cancel();
+      setState(() => _hold = 0);
+      HapticFeedback.heavyImpact();
+      _pickCategory(); // pushing a route from INSIDE setState worked by luck, not by design
     });
   }
   void _endHold() { _holdTimer?.cancel(); if (!_fired) setState(() => _hold = 0); }
@@ -41,7 +55,7 @@ class _SosScreenState extends ConsumerState<SosScreen> {
           _catTile(ctx, s, SosCategory.rescue, note), _catTile(ctx, s, SosCategory.custom, note),
         ]),
       ),
-    );
+    ).whenComplete(note.dispose); // one controller per attempt — do not leak it
   }
 
   Widget _catTile(BuildContext ctx, S s, SosCategory c, TextEditingController note) => Padding(
@@ -50,15 +64,30 @@ class _SosScreenState extends ConsumerState<SosScreen> {
       child: OutlinedButton.icon(
           style: OutlinedButton.styleFrom(side: const BorderSide(color: AC.border),
               alignment: AlignmentDirectional.centerStart),
-          onPressed: () {
+          onPressed: () async {
+            // Read the note and the messenger BEFORE the sheet route goes away.
+            final text = note.text.trim();
+            final messenger = ScaffoldMessenger.of(ctx);
             Navigator.of(ctx).pop();
-            ref.read(meshProvider.notifier).fireSos(category: c, text: note.text.trim());
+            final refused = await ref.read(meshProvider.notifier).fireSos(category: c, text: text);
+            // A refusal used to be logged and swallowed: the user held for over a second,
+            // chose a category, and NOTHING happened anywhere they could see it.
+            if (refused != null) {
+              messenger.showSnackBar(SnackBar(content: Text(_refusalText(s, refused))));
+            }
           },
           icon: Text(catIcon(c), style: const TextStyle(fontSize: 24)),
           label: Text(catName(s, c), style: const TextStyle(color: AC.text, fontSize: 17, fontWeight: FontWeight.w700)),
     ),
   ),
   );
+
+  String _refusalText(S s, SosRefusal r) => switch (r) {
+    SosRefusal.notReady => s.sosNotReady,
+    SosRefusal.busy => s.sosBusy,
+    SosRefusal.cooldown => s.sosCooldown,
+    SosRefusal.alreadyActive => s.sosAlreadyActive,
+  };
 
   @override
   Widget build(BuildContext context) {

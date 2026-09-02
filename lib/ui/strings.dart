@@ -72,6 +72,19 @@ class S {
   String get cancel => _p('CANCEL', 'منسوخ');
   String get erase => _p('ERASE', 'مٹا دیں');
   String get notebookCleared => _p('Notebook cleared', 'نوٹ بک خالی کر دی گئی');
+  String get silence => _p('SILENCE', 'خاموش کریں');
+  String get nextAlert => _p('GOT IT — NEXT ALERT', 'سمجھ گیا — اگلا الرٹ');
+  String get nameRequired => _p('Enter a call sign first — it is how rescuers will see you',
+      'پہلے اپنا نام لکھیں — ریسکیو ٹیم آپ کو اسی نام سے دیکھے گی');
+  String get saveFailed => _p('Could not save on this phone — try once more',
+      'اس فون پر محفوظ نہیں ہو سکا — دوبارہ کوشش کریں');
+  String get sosNotReady => _p('Mesh is still starting — try again in a moment',
+      'میش ابھی شروع ہو رہا ہے — ایک لمحے بعد دوبارہ کوشش کریں');
+  String get sosBusy => _p('Your SOS is being sent…', 'آپ کا ایس او ایس بھیجا جا رہا ہے…');
+  String get sosCooldown => _p('Just sent — wait a few seconds before sending another',
+      'ابھی بھیجا گیا ہے — دوبارہ بھیجنے سے پہلے چند لمحے رکیں');
+  String get sosAlreadyActive => _p('Your SOS is already active — tap I\'M SAFE first',
+      'آپ کا ایس او ایس پہلے سے فعال ہے — پہلے میں محفوظ ہوں دبائیں');
 }
 
 String timeAgo(int epochSec, {bool ur = false}) {

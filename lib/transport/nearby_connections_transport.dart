@@ -26,6 +26,12 @@ const Duration kPendingTimeout = Duration(seconds: 15);
 const Duration kNoPeerRefresh = Duration(seconds: 45); // dead-air => full radio refresh
 const int kMaxConnectTries = 3;
 
+/// NO PLUGIN CALL MAY HANG FOREVER. Every Nearby() future below is bounded, because a
+/// wedged native stack that never completes would freeze the very self-healing loops that
+/// exist to un-wedge it — and freeze stop(), which is what RESTART MESH waits on.
+const Duration kRadioOp = Duration(seconds: 10);
+const Duration kPingTimeout = Duration(seconds: 8);
+
 /// Minimal task handler — its only job is to EXIST so Android treats us as an
 /// active foreground task (anti OEM-killer). Does NOT survive swipe-from-recents:
 /// that is a confirmed platform limitation, not a bug.
@@ -55,6 +61,7 @@ class NearbyConnectionsTransport implements NearbyTransport {
   Timer? _watchdog;
   Timer? _liveness;
   bool _running = false;                           // guards timers after stop()
+  bool _ticking = false;                           // one watchdog pass at a time (see _watchdogTick)
   DateTime _lastRadioProgress = DateTime.now();    // last time a peer was seen/connected
   String _myName = '';
   bool _adv = false;
@@ -72,9 +79,9 @@ class NearbyConnectionsTransport implements NearbyTransport {
   Future<void> start(String endpointName) async {
     _myName = endpointName;
     // 1) HOT-RESTART KILLER: kill leftover native state before anything ("hot restart -> ALREADY_ADVERTISING" scar)
-    try { await Nearby().stopAdvertising(); } catch (_) {}
-    try { await Nearby().stopDiscovery(); } catch (_) {}
-    try { await Nearby().stopAllEndpoints(); } catch (_) {}
+    try { await Nearby().stopAdvertising().timeout(kRadioOp); } catch (_) {}
+    try { await Nearby().stopDiscovery().timeout(kRadioOp); } catch (_) {}
+    try { await Nearby().stopAllEndpoints().timeout(kRadioOp); } catch (_) {}
     _found.clear(); _connected.clear(); _pending.clear(); _sendChains.clear();
     _pendingSince.clear(); _tries.clear(); _lastHeard.clear();
     _running = true;
@@ -106,28 +113,39 @@ class NearbyConnectionsTransport implements NearbyTransport {
     _events.add(const TransportEvent(EventType.transportUp));
   }
 
+  /// ALWAYS STOPS BEFORE IT STARTS. A start() that timed out on our side may still have
+  /// succeeded natively, and starting a radio that is already live returns
+  /// ALREADY_ADVERTISING — which would latch _adv=false and put the watchdog in a permanent
+  /// loop, restarting a radio that was working the whole time.
   Future<void> _beginAdvertising() async {
     try {
+      try { await Nearby().stopAdvertising().timeout(kRadioOp); } catch (_) {}
       _adv = await Nearby().startAdvertising(
         _myName, kStrategy, serviceId: kServiceId,
         onConnectionInitiated: _onConnectionInitiated,
         onConnectionResult: _onConnectionResult,
         onDisconnected: _onDisconnected,
-      );
+      ).timeout(kRadioOp, onTimeout: () => false);
       _log('Advertising ${_adv ? "ON" : "FAILED"}');
     } catch (e) { _adv = false; _log('ADVERTISE ERROR: $e'); }
   }
 
   Future<void> _beginDiscovery() async {
     try {
+      try { await Nearby().stopDiscovery().timeout(kRadioOp); } catch (_) {}
       _disc = await Nearby().startDiscovery(
         _myName, kStrategy, serviceId: kServiceId,
         onEndpointFound: (id, name, serviceId) => _onEndpointFound(id, name),
         onEndpointLost: (id) {
           _found.remove(id); // no ghosts (only fires while discovering — known platform quirk)
+          // FRESH BUDGET ON RETURN: without this, _request's "will retry if rediscovered"
+          // promise was a lie. The try counter outlived the peer, so someone who failed
+          // three times was blacklisted for the whole session — even after walking back
+          // into range, which is exactly when a survivor needs the link most.
+          _tries.remove(id);
           _events.add(TransportEvent(EventType.endpointLost, endpointId: id));
         },
-      );
+      ).timeout(kRadioOp, onTimeout: () => false);
       _log('Discovery ${_disc ? "ON" : "FAILED"}');
     } catch (e) { _disc = false; _log('DISCOVERY ERROR: $e'); }
   }
@@ -193,7 +211,13 @@ class NearbyConnectionsTransport implements NearbyTransport {
               endpointId: endpointId, message: 'Transfer failure to $endpointId — deliveries re-armed'));
         }
       },
-    );
+    ).catchError((Object e) {
+      // An accept CAN legitimately fail (8009 crossfire, peer vanished mid-handshake). Left
+      // unhandled it was an invisible zone error — and "why did nothing connect?" is the one
+      // question a silent log can never answer.
+      _log('ACCEPT ERROR from $id: $e');
+      return false;
+    });
   }
 
   void _onConnectionResult(String id, Status status) {
@@ -249,7 +273,10 @@ class NearbyConnectionsTransport implements NearbyTransport {
         continue;
       }
       try {
-        await _send(id, kPingFrame, swallow: false); // errors MUST surface here
+        // BOUNDED: this loop is sequential, so one send that never completes would stall the
+        // ping for every other peer and silently retire the whole liveness system. A hang is
+        // indistinguishable from a dead link, so we treat it as one.
+        await _send(id, kPingFrame, swallow: false).timeout(kPingTimeout);
       } catch (e) {
         _log('PING FAILED -> $id ($e) — dropping ghost');
         await _forceDisconnect(id);
@@ -259,7 +286,20 @@ class NearbyConnectionsTransport implements NearbyTransport {
 
   // ---------- WATCHDOG: revive dead radios, free stuck slots ----------
   Future<void> _watchdogTick() async {
-    if (!_running) return;
+    if (!_running || _ticking) return;
+    // ONE PASS AT A TIME. The radio refresh below sets _adv/_disc false and then awaits
+    // several plugin calls. A second tick landing inside that window read "advertising is
+    // down" and fired a SECOND startAdvertising at the same radio — ALREADY_ADVERTISING,
+    // false, and the watchdog latched into endlessly restarting a healthy radio.
+    _ticking = true;
+    try {
+      await _watchdogPass();
+    } finally {
+      _ticking = false; // a thrown pass must never disable the watchdog for good
+    }
+  }
+
+  Future<void> _watchdogPass() async {
     final now = DateTime.now();
 
     // a) stuck pending requests block all future attempts to that peer — free them
@@ -282,9 +322,7 @@ class NearbyConnectionsTransport implements NearbyTransport {
         now.difference(_lastRadioProgress) > kNoPeerRefresh) {
       _log('WATCHDOG: ${kNoPeerRefresh.inSeconds}s of dead air — full radio refresh');
       _adv = false; _disc = false;
-      try { await Nearby().stopAdvertising(); } catch (_) {}
-      try { await Nearby().stopDiscovery(); } catch (_) {}
-      await _beginAdvertising();
+      await _beginAdvertising(); // each one stops the native radio before restarting it
       await _beginDiscovery();
       _lastRadioProgress = DateTime.now(); // give the fresh radios a full window
     }
@@ -293,20 +331,25 @@ class NearbyConnectionsTransport implements NearbyTransport {
   // ---------- Serial-send law ----------
   /// One chain per endpoint (anti double-send race). The STORED chain never carries
   /// an error, so a single failed send can no longer poison every later send (#36).
-  Future<void> _send(String endpointId, String payload, {required bool swallow}) {
-    Future<void> job() {
+  /// Returns whether the radio actually accepted the bytes — a swallowed error used to
+  /// look identical to success, which let the mesh mark undelivered letters as delivered.
+  Future<bool> _send(String endpointId, String payload, {required bool swallow}) {
+    Future<bool> job() {
       final f = Nearby().sendBytesPayload(endpointId, Uint8List.fromList(utf8.encode(payload)));
-      if (!swallow) return f.then((_) {});
-      return f.then((_) {}).catchError((Object e) { _log('SEND ERROR -> $endpointId: $e'); });
+      if (!swallow) return f.then((_) => true);
+      return f.then((_) => true).catchError((Object e) {
+        _log('SEND ERROR -> $endpointId: $e');
+        return false;
+      });
     }
     final prev = _sendChains[endpointId] ?? Future.value();
     final next = prev.then((_) => job(), onError: (_) => job());
-    _sendChains[endpointId] = next.catchError((Object _) {});
+    _sendChains[endpointId] = next.then((_) {}, onError: (Object _) {});
     return next;
   }
 
   @override
-  Future<void> sendTo(String endpointId, String payloadJson) =>
+  Future<bool> sendTo(String endpointId, String payloadJson) =>
       _send(endpointId, payloadJson, swallow: true);
 
   // ---------- FULL STOP (before ANY role/strategy change; 8009 law) ----------
@@ -315,9 +358,11 @@ class NearbyConnectionsTransport implements NearbyTransport {
     _running = false;
     _watchdog?.cancel(); _watchdog = null;
     _liveness?.cancel(); _liveness = null;
-    try { await Nearby().stopAllEndpoints(); } catch (_) {}
-    try { await Nearby().stopAdvertising(); } catch (_) {}
-    try { await Nearby().stopDiscovery(); } catch (_) {}
+    // BOUNDED: restartMesh() awaits stop() before start(). One hung plugin call here would
+    // hold the lifecycle lock forever, leaving the recovery button permanently dead.
+    try { await Nearby().stopAllEndpoints().timeout(kRadioOp); } catch (_) {}
+    try { await Nearby().stopAdvertising().timeout(kRadioOp); } catch (_) {}
+    try { await Nearby().stopDiscovery().timeout(kRadioOp); } catch (_) {}
     _connected.clear(); _pending.clear(); _sendChains.clear(); _found.clear();
     _pendingSince.clear(); _tries.clear(); _lastHeard.clear();
     _adv = false; _disc = false;
@@ -327,40 +372,49 @@ class NearbyConnectionsTransport implements NearbyTransport {
   }
 
   // ---------- Foreground service (v10 pattern, POC-verified) ----------
+  /// BEST-EFFORT, NEVER FATAL. This runs BEFORE the radios come up, so an exception in here
+  /// used to abort start() outright: a denied notification or a hostile OEM battery dialog
+  /// would leave the phone with NO MESH AT ALL — the entire feature traded away for a
+  /// notification. The service only helps us survive backgrounding; relaying works without it.
   Future<void> _startService() async {
-    final notif = await FlutterForegroundTask.checkNotificationPermission();
-    if (notif != NotificationPermission.granted) {
-      await FlutterForegroundTask.requestNotificationPermission();
+    try {
+      final notif = await FlutterForegroundTask.checkNotificationPermission();
+      if (notif != NotificationPermission.granted) {
+        await FlutterForegroundTask.requestNotificationPermission();
+      }
+      if (Platform.isAndroid && !(await FlutterForegroundTask.isIgnoringBatteryOptimizations)) {
+        _log('Requesting battery-optimization exemption — ACCEPT this dialog (anti-killer)');
+        await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+      }
+      FlutterForegroundTask.init(
+        androidNotificationOptions: AndroidNotificationOptions(
+          channelId: 'aidbridge_relay_channel',
+          channelName: 'AidBridge Relay Service',
+          channelDescription: 'Keeps the disaster mesh alive in background',
+          onlyAlertOnce: true,
+        ),
+        iosNotificationOptions: const IOSNotificationOptions(),
+        foregroundTaskOptions: ForegroundTaskOptions(
+          eventAction: ForegroundTaskEventAction.repeat(30000),
+          autoRunOnBoot: false, allowWakeLock: true, allowWifiLock: true,
+        ),
+      );
+      final result = await FlutterForegroundTask.startService(
+        serviceId: 100,
+        notificationTitle: 'AidBridge mesh active',
+        notificationText: 'Relaying SOS packets. Keep this app alive.',
+        callback: aidbridgeServiceCallback,
+      );
+      _serviceOn = true;
+      _log('Foreground service started: $result');
+    } catch (e) {
+      _serviceOn = false;
+      _log('FOREGROUND SERVICE UNAVAILABLE: $e — mesh still starting (may sleep in background)');
     }
-    if (Platform.isAndroid && !(await FlutterForegroundTask.isIgnoringBatteryOptimizations)) {
-      _log('Requesting battery-optimization exemption — ACCEPT this dialog (anti-killer)');
-      await FlutterForegroundTask.requestIgnoreBatteryOptimization();
-    }
-    FlutterForegroundTask.init(
-      androidNotificationOptions: AndroidNotificationOptions(
-        channelId: 'aidbridge_relay_channel',
-        channelName: 'AidBridge Relay Service',
-        channelDescription: 'Keeps the disaster mesh alive in background',
-        onlyAlertOnce: true,
-      ),
-      iosNotificationOptions: const IOSNotificationOptions(),
-      foregroundTaskOptions: ForegroundTaskOptions(
-        eventAction: ForegroundTaskEventAction.repeat(30000),
-        autoRunOnBoot: false, allowWakeLock: true, allowWifiLock: true,
-      ),
-    );
-    final result = await FlutterForegroundTask.startService(
-      serviceId: 100,
-      notificationTitle: 'AidBridge mesh active',
-      notificationText: 'Relaying SOS packets. Keep this app alive.',
-      callback: aidbridgeServiceCallback,
-    );
-    _serviceOn = true;
-    _log('Foreground service started: $result');
   }
 
   Future<void> _stopService() async {
     _serviceOn = false;
-    await FlutterForegroundTask.stopService();
+    try { await FlutterForegroundTask.stopService(); } catch (_) {}
   }
 }

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../app/mesh.dart';
 import '../protocol/packet.dart';
 import '../protocol/protocol_engine.dart';
@@ -16,15 +15,27 @@ class AlertsScreen extends ConsumerWidget {
     final s = ref.watch(stringsProvider);
     final m = ref.watch(meshProvider); // any mesh change re-reads the notebook (pragmatic v1)
     final ctrl = ref.read(meshProvider.notifier);
-    // FIRST-FRAME LAW: no engine yet (or mesh stopped mid-restart) => nothing to read.
-    if (!ctrl.engineReady || !m.transportUp) {
+    // FIRST-FRAME LAW: no engine yet => there is genuinely nothing to read.
+    // But NOT gated on transportUp: the notebook is LOCAL data. Hiding it whenever the radios
+    // were down meant RESTART MESH — or one denied permission — blanked every SOS this phone
+    // had already received, at exactly the moment someone needs to re-read a name or a number.
+    if (!ctrl.engineReady) {
       return Center(child: Text(s.offline, style: const TextStyle(color: AC.dim)));
     }
     final sosList = ctrl.engine.notebook.where((p) => p.type == PacketType.sos).toList()
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     if (sosList.isEmpty) return Center(child: Text(s.noAlerts, style: const TextStyle(color: AC.dim)));
 
-    return ListView.separated(
+    return Column(children: [
+      // The letters stay readable while the mesh is down — but say so, or a stale list looks live.
+      if (!m.transportUp)
+        Container(
+          width: double.infinity, color: AC.surface,
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 14),
+          child: Text(s.offline, textAlign: TextAlign.center,
+              style: const TextStyle(color: AC.mute, fontSize: 12)),
+        ),
+      Expanded(child: ListView.separated(
       padding: const EdgeInsets.all(12),
       itemCount: sosList.length,
       separatorBuilder: (_, _) => const SizedBox(height: 8),
@@ -63,7 +74,8 @@ class AlertsScreen extends ConsumerWidget {
           ),
         );
       },
-    );
+      )),
+    ]);
   }
 
   void _detail(BuildContext ctx, WidgetRef ref, S s, AidPacket p, String label, Color color) {
@@ -96,7 +108,7 @@ class AlertsScreen extends ConsumerWidget {
               padding: const EdgeInsets.only(top: 8),
               child: FilledButton.icon(
                 style: FilledButton.styleFrom(backgroundColor: AC.safe),
-                onPressed: () => launchUrl(Uri.parse('tel:${p.phone}')),
+                onPressed: () => dialPhone(ctx, p.phone!),
                 icon: const Icon(Icons.call, color: Colors.black),
                 label: Text(p.phone!, style: const TextStyle(color: Colors.black, fontWeight: FontWeight.w800, fontSize: 17)),
               )),

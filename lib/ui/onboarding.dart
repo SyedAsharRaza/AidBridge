@@ -18,6 +18,13 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   bool _busy = false;
 
   @override
+  void dispose() {
+    _name.dispose();
+    _phone.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
     return Scaffold(
@@ -54,23 +61,42 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             ),
             const SizedBox(height: 20),
             FilledButton(
-              onPressed: _busy ? null : () async {
-                if (_name.text.trim().isEmpty) return;
-                setState(() => _busy = true);
-                final router = GoRouter.of(context); // captured BEFORE the await gap
-                final id = ref.read(identityProvider.notifier);
-                await id.setName(_name.text);
-                await id.setPhone(_phone.text);
-                await id.setRole(_role);
-                await id.completeOnboarding();
-                router.go(_role == 'ngo' ? '/ngo' : '/civilian');
-              },
+              onPressed: _busy ? null : () => _enter(s),
               child: Text(_busy ? '…' : s.startApp),
             ),
           ]),
         ),
       ),
     );
+  }
+
+  /// THE FRONT DOOR. Every failure path here must leave the door usable: a silent no-op or a
+  /// button stuck on '…' means the user never gets into the app at all.
+  Future<void> _enter(S s) async {
+    final messenger = ScaffoldMessenger.of(context);
+    if (_name.text.trim().isEmpty) {
+      // Was a bare `return`: the button simply did nothing and never said why.
+      messenger.showSnackBar(SnackBar(content: Text(s.nameRequired)));
+      return;
+    }
+    setState(() => _busy = true);
+    final router = GoRouter.of(context); // captured BEFORE the await gap
+    final id = ref.read(identityProvider.notifier);
+    try {
+      // TRIMMED: the name becomes this phone's radio endpoint name, so stray whitespace
+      // would ride along in every advertisement and every alert card.
+      await id.setName(_name.text.trim());
+      await id.setPhone(_phone.text.trim());
+      await id.setRole(_role);
+      await id.completeOnboarding();
+      router.go(_role == 'ngo' ? '/ngo' : '/civilian');
+    } catch (_) {
+      // Without this the flag stayed true on ANY storage failure and the only way into the
+      // app was disabled for the rest of the process — a permanent lockout at the door.
+      messenger.showSnackBar(SnackBar(content: Text(s.saveFailed)));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   Widget _roleTile(String role, IconData icon, String title, String hint) {

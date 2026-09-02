@@ -164,15 +164,15 @@ Requirements:
 
 ```bash
 flutter analyze     # clean
-flutter test        # 25 tests on the pure-Dart protocol engine
+flutter test        # 26 tests on the pure-Dart protocol engine
 ```
 
 The engine tests cover: wire round-trip, garbage rejection, relay-only mutation,
 dedup, own-echo rejection, the chat privacy partition, the TTL wall, full-TTL origin
 send, delivery-book retry-on-failure, cancel resolution, 48 h expiry, heartbeat
 re-arming, spent-heartbeat-fuel burn-off, the 500-char anti-amplification cap
-(including surrogate-safe truncation), the rehearsal reset, and crash recovery via
-snapshot/restore.
+(including surrogate-safe truncation), the cancel→siren matching contract, the
+rehearsal reset, and crash recovery via snapshot/restore.
 
 ---
 
@@ -262,5 +262,5 @@ others under congestion.
 3. **The internet is optional, not required.** One connected phone drains the whole
    region's backlog to the cloud — and because the packet id is the document id, a
    hundred phones uploading the same letter still produce one row.
-4. **The routing engine is provable.** Pure Dart, zero plugin imports, 25 unit tests.
+4. **The routing engine is provable.** Pure Dart, zero plugin imports, 26 unit tests.
    We can demonstrate correctness on a laptop and behaviour on phones.

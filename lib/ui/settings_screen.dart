@@ -23,6 +23,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   @override
+  void dispose() {
+    _name.dispose();
+    _phone.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
     final m = ref.watch(meshProvider);
@@ -34,9 +41,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       const SizedBox(height: 8),
       FilledButton(onPressed: () async {
         final messenger = ScaffoldMessenger.of(context); // capture BEFORE the await gap
-        await ref.read(identityProvider.notifier).setName(_name.text);
-        await ref.read(identityProvider.notifier).setPhone(_phone.text);
-        messenger.showSnackBar(SnackBar(content: Text('${s.save} ✓')));
+        // Onboarding demands a call sign; Settings must not quietly allow erasing it, or this
+        // phone starts advertising as an empty name and every alert card it sends reads blank.
+        if (_name.text.trim().isEmpty) {
+          messenger.showSnackBar(SnackBar(content: Text(s.nameRequired)));
+          return;
+        }
+        try {
+          await ref.read(identityProvider.notifier).setName(_name.text.trim());
+          await ref.read(identityProvider.notifier).setPhone(_phone.text.trim());
+          messenger.showSnackBar(SnackBar(content: Text('${s.save} ✓')));
+        } catch (_) {
+          messenger.showSnackBar(SnackBar(content: Text(s.saveFailed)));
+        }
       }, child: Text(s.save)),
       const SizedBox(height: 18),
       Container(

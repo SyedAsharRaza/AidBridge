@@ -190,6 +190,18 @@ void main() {
       expect(e.isResolved('p1'), isTrue);
     });
 
+    test('a cancel names the SOS it resolves, so the siren can be matched and killed', () {
+      // THE SCREAMING-PHONE CONTRACT: MeshController silences the alarm only when
+      // r.targetId equals the packet it is currently sirening about. If the engine
+      // stopped reporting targetId, the siren would outlive the emergency again.
+      final e = _engine();
+      e.ingest('e1', _wireFrom(id: 'p1', senderId: 'them'), now);
+      final r = e.ingest('e1',
+          _wireFrom(id: 'c1', senderId: 'them', type: PacketType.cancel, targetId: 'p1'), now);
+      expect(r.targetId, 'p1');
+      expect(r.siren, isFalse); // a resolve must never itself raise an alarm
+    });
+
     test('48h old letters read EXPIRED', () {
       final e = _engine();
       final old = AidPacket(
