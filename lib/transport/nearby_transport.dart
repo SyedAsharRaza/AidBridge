@@ -26,7 +26,9 @@ abstract class NearbyTransport {
   Future<void> stop();
 
   /// Serialized per endpoint in the implementation (anti double-send race).
-  Future<void> sendTo(String endpointId, String payloadJson);
+  /// Returns true only if the radio accepted the bytes. Callers MUST NOT record a
+  /// packet as delivered on a false — that is how a letter goes silently missing.
+  Future<bool> sendTo(String endpointId, String payloadJson);
 
   /// Currently connected endpoint ids (glue flushes these).
   Set<String> get connectedEndpoints;

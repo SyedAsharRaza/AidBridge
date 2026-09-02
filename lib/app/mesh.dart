@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart' as ph; // ServiceStatus clashes with geolocator
 import 'package:shared_preferences/shared_preferences.dart';
 import '../protocol/packet.dart';
 import '../protocol/protocol_engine.dart';
@@ -12,6 +14,23 @@ import '../transport/nearby_connections_transport.dart';
 import '../transport/nearby_transport.dart';
 import '../services/bridge_service.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+
+/// Shipped asset (16-bit PCM WAV — decodes on every Android without a codec gamble).
+const String kSirenAsset = 'audio/siren.wav';
+
+/// Rate limit on originating SOS letters. A demo audience WILL mash the button, and
+/// every press that got through would burn a notebook slot and a cloud write.
+const Duration kSosCooldown = Duration(seconds: 10);
+
+/// Why a press did NOT originate an SOS. Returned to the caller instead of only being
+/// logged: the log lives on another screen, and a disaster button that silently does
+/// nothing is worse than one that refuses out loud. The UI localises these.
+enum SosRefusal { notReady, busy, cooldown, alreadyActive }
+
+/// How many unacknowledged takeovers we are willing to hold. Beyond this the siren and
+/// the notification still fire — only the modal is skipped, because a wall of stacked
+/// dialogs is worse than useless to someone in a panic. The ALERTS tab holds everything.
+const int kMaxAlertQueue = 5;
 
 class MeshIdentity {
   final String selfId;
@@ -24,6 +43,11 @@ class MeshIdentity {
 
 final identityProvider = StateNotifierProvider<IdentityStore, MeshIdentity?>((ref) => IdentityStore());
 final bridgeProvider = Provider<BridgeService>((ref) => BridgeService());
+
+/// BridgeService is a mutable singleton, so watching it can never rebuild anything.
+/// This flag is the reactive shadow of `BridgeService.ready` — cloud streams and the
+/// NGO bridge tab watch THIS, otherwise they latch "offline" forever. (REACTIVITY LAW)
+final bridgeReadyProvider = StateProvider<bool>((ref) => false);
 
 
 
@@ -58,19 +82,31 @@ class MeshState {
   final bool transportUp;
   final int peers, seenCount, notebookCount;
   final List<String> log;
-  final AidPacket? alertPacket; // newest inbound SOS -> siren + banner
+  /// Unacknowledged inbound SOS takeovers, oldest first. A QUEUE, not a slot: during a
+  /// burst the second victim's alarm used to be swallowed by the first one's open dialog.
+  final List<AidPacket> alertQueue;
   final String? ownActiveSosId;
+  final String? radioWarning;   // Bluetooth/Location OFF => mesh is deaf and blind
   const MeshState({
     this.transportUp = false, this.peers = 0, this.seenCount = 0,
-    this.notebookCount = 0, this.log = const [], this.alertPacket, this.ownActiveSosId,
+    this.notebookCount = 0, this.log = const [], this.alertQueue = const [], this.ownActiveSosId,
+    this.radioWarning,
   });
+
+  /// The alert currently owed a takeover: the head of the queue.
+  AidPacket? get alertPacket => alertQueue.isEmpty ? null : alertQueue.first;
+  int get alertsWaiting => alertQueue.length;
+
   MeshState copyWith({bool? transportUp, int? peers, int? seenCount, int? notebookCount,
-    List<String>? log, AidPacket? alertPacket, String? ownActiveSosId, bool clearAlert = false}) =>
+    List<String>? log, List<AidPacket>? alertQueue, String? ownActiveSosId, String? radioWarning,
+    bool clearAlert = false, bool clearOwnSos = false, bool clearRadioWarning = false}) =>
       MeshState(
         transportUp: transportUp ?? this.transportUp, peers: peers ?? this.peers,
         seenCount: seenCount ?? this.seenCount, notebookCount: notebookCount ?? this.notebookCount,
-        log: log ?? this.log, alertPacket: clearAlert ? null : (alertPacket ?? this.alertPacket),
-        ownActiveSosId: ownActiveSosId ?? this.ownActiveSosId,
+        log: log ?? this.log,
+        alertQueue: clearAlert ? const [] : (alertQueue ?? this.alertQueue),
+        ownActiveSosId: clearOwnSos ? null : (ownActiveSosId ?? this.ownActiveSosId),
+        radioWarning: clearRadioWarning ? null : (radioWarning ?? this.radioWarning),
       );
 }
 
@@ -86,25 +122,71 @@ class MeshController extends StateNotifier<MeshState> {
   Timer? _heartbeatTimer;
   final AudioPlayer _siren = AudioPlayer();
   final bool _sirenArmed = true;
+  bool _firing = false;        // re-entrancy gate: fireSos awaits GPS, so it can overlap itself
+  DateTime? _lastSosAt;        // origin timestamp for the cooldown
+  bool _persisting = false;    // one snapshot writer at a time (see _persist)
+  bool _persistDirty = false;  // state changed while writing => write once more
+  Future<void> _lifecycle = Future.value(); // serialises start/stop/restart
+  int _sirenGen = 0;           // invalidates delayed siren/haptic work after a silence
+  final Set<String> _flushing = {};   // endpoints with a flush in flight (anti double-send)
+  final Set<String> _flushAgain = {}; // …and those that gained work while it ran
 
   MeshController(this.ref) : super(const MeshState());
 
   ProtocolEngine get engine => _engine!;
+  /// UI builds can run BEFORE start()'s microtask creates the engine — every screen
+  /// must check this before touching [engine]. (FIRST-FRAME LAW)
+  bool get engineReady => _engine != null;
   NearbyTransport get transport => ref.read(transportProvider);
 
   void _log(String m) => state = state.copyWith(
       log: [m, ...state.log].take(50).toList());
 
+  /// SNAPSHOT WRITER — serialised AND atomic.
+  /// Callers fire this unawaited from six places, so a packet burst used to overlap two
+  /// writeAsString() calls on one file: both truncate, the writes interleave, and the
+  /// result is half-JSON. restore() treats corrupt JSON as "start empty", so a burst
+  /// could SILENTLY ERASE the whole notebook (including the user's own live SOS) at the
+  /// next launch — in an app whose entire promise is that the letter survives.
+  /// Now: one writer at a time, coalescing later requests, and the file is swapped in by
+  /// rename() so a kill mid-write leaves the previous good snapshot intact.
   Future<void> _persist() async {
+    if (_engine == null) return;
+    if (_persisting) { _persistDirty = true; return; }
+    _persisting = true;
     try {
-      if (_engine == null) return;
+      do {
+        _persistDirty = false;
+        await _writeSnapshot();
+      } while (_persistDirty); // absorbed a change mid-write => the last state still lands
+    } finally {
+      _persisting = false;
+    }
+  }
+
+  Future<void> _writeSnapshot() async {
+    try {
       final dir = await getApplicationDocumentsDirectory();
-      await File('${dir.path}/aidbridge_notebook.json').writeAsString(_engine!.snapshot());
+      final tmp = File('${dir.path}/aidbridge_notebook.tmp');
+      await tmp.writeAsString(_engine!.snapshot(), flush: true);
+      await tmp.rename('${dir.path}/aidbridge_notebook.json'); // atomic on the same volume
     } catch (_) {/* persistence is best-effort, never crash the mesh for it */}
   }
 
+  /// Serialises radio lifecycle work: two callers can never drive start/stop at once.
+  Future<void> _serial(Future<void> Function() op) {
+    final next = _lifecycle.then((_) => op());
+    _lifecycle = next.then((_) {}, onError: (_) {}); // a failure must not poison the queue
+    return next;
+  }
+
   /// START — FULL transport lifecycle + notebook restore. (Role-change callers MUST stop() first.)
-  Future<void> start() async {
+  /// Queued behind any in-flight start/stop: both shells kick this from initState, and a
+  /// RESTART MESH tap during boot used to be able to drive transport.start() twice at once.
+  Future<void> start() => _serial(_start);
+
+  Future<void> _start() async {
+    if (state.transportUp) { _log('mesh already up — start ignored'); return; }
     await ref.read(identityProvider.notifier).load();
     final id = ref.read(identityProvider)!;
     _engine ??= ProtocolEngine(selfId: id.selfId, selfName: id.name, selfPhone: id.phone);
@@ -114,12 +196,8 @@ class MeshController extends StateNotifier<MeshState> {
     } catch (_) {}
     _refreshCounts();
     // GHOST FIX: after a process kill the notebook remembers the SOS — so the banner must too
-    for (final p in _engine!.notebook.reversed) {
-      if (p.type == PacketType.sos && p.senderId == id.selfId && !_engine!.isResolved(p.id)) {
-        state = state.copyWith(ownActiveSosId: p.id);
-        break;
-      }
-    }
+    final restored = _engine!.ownActiveSos();
+    if (restored != null) state = state.copyWith(ownActiveSosId: restored.id);
 
     _sub?.cancel();
     _sub = transport.events.listen(_onEvent);
@@ -127,11 +205,46 @@ class MeshController extends StateNotifier<MeshState> {
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) => _heartbeat());
     await transport.start('${id.name}·${id.selfId}'); // name·id => symmetry-breaker inequality
     state = state.copyWith(transportUp: true);
+    await refreshRadioWarning();   // radios OFF is the #1 silent "nothing connects" cause
     await ref.read(bridgeProvider).init();
+    ref.read(bridgeReadyProvider.notifier).state = ref.read(bridgeProvider).ready;
     _log(ref.read(bridgeProvider).status);
   }
 
-  Future<void> stop() async {
+  /// Manual recovery hatch (Settings button): full stop, then a clean start.
+  /// The notebook survives — only radios and native state are recycled.
+  Future<void> restart() async {
+    _log('MANUAL MESH RESTART requested');
+    await stop();
+    await start();
+  }
+
+  /// Nearby Connections needs BOTH Bluetooth and Location switched ON. When either is
+  /// off, discovery silently finds nobody — so we say it out loud instead of failing mute.
+  Future<void> refreshRadioWarning() async {
+    String? w;
+    try {
+      final btOff = (await ph.Permission.bluetooth.serviceStatus) == ph.ServiceStatus.disabled;
+      final locOff = (await ph.Permission.location.serviceStatus) == ph.ServiceStatus.disabled;
+      if (btOff && locOff) {
+        w = 'Bluetooth AND Location are OFF — no phone can be found.';
+      } else if (btOff) {
+        w = 'Bluetooth is OFF — turn it on to reach nearby phones.';
+      } else if (locOff) {
+        w = 'Location is OFF — Android needs it to scan for phones.';
+      }
+    } catch (_) {/* status unknown => never block the SOS path */}
+    state = w == null ? state.copyWith(clearRadioWarning: true) : state.copyWith(radioWarning: w);
+    if (w != null) _log('RADIO WARNING: $w');
+  }
+
+  Future<void> openRadioSettings() async {
+    try { await Geolocator.openLocationSettings(); } catch (_) {}
+  }
+
+  Future<void> stop() => _serial(_stop);
+
+  Future<void> _stop() async {
     _heartbeatTimer?.cancel();
     await transport.stop();
     await stopSiren();
@@ -168,16 +281,24 @@ class MeshController extends StateNotifier<MeshState> {
   void _onPayload(String fromId, String raw) {
     final r = engine.ingest(fromId, raw, DateTime.now().toUtc());
     _log(r.note);
-    if (r.siren && r.packet != null) {
-      state = state.copyWith(alertPacket: r.packet);
+    // ENQUEUE, don't overwrite: two victims 200ms apart both deserve a takeover. Dedup by
+    // id so the same letter arriving from a second courier cannot double-book the screen.
+    if (r.siren && r.packet != null && !state.alertQueue.any((p) => p.id == r.packet!.id)) {
+      if (state.alertQueue.length >= kMaxAlertQueue) {
+        _log('ALERT QUEUE FULL — ${r.packet!.senderName} is in ALERTS (no takeover)');
+      } else {
+        state = state.copyWith(alertQueue: [...state.alertQueue, r.packet!]);
+      }
+      // The alarm fires either way — a dropped modal must never mean a silent emergency.
       if (_sirenArmed) unawaited(_playSiren());
-      unawaited(FlutterForegroundTask.updateService(
-        notificationTitle: '🆘 SOS: ${r.packet!.senderName}',
-        notificationText: 'Distress signal received — TAP to open AidBridge',
-      ));
+      unawaited(_notify('🆘 SOS: ${r.packet!.senderName}',
+          'Distress signal received — TAP to open AidBridge'));
     }
     if (r.action == PacketAction.cancel) {
       _log('RESOLVED ${r.targetId} — ${r.packet?.senderName} is safe');
+      // THE ALARM DIES WITH ITS CAUSE. Pull this victim out of the takeover queue wherever
+      // they sit in it — nobody should have to tap a dead alarm quiet.
+      if (r.targetId != null) unawaited(dismissAlert(r.targetId!));
     }
     if (r.uplink && r.packet != null) {
       final me = ref.read(identityProvider)?.name ?? 'unknown';
@@ -188,11 +309,38 @@ class MeshController extends StateNotifier<MeshState> {
   }
 
   // ---------- FLUSH LAW (POC _doFlush as glue routine) ----------
+  /// DELIVERY IS ONLY RECORDED ON A CONFIRMED SEND. sendTo() used to swallow radio
+  /// errors and return normally, so a failed hand-off was still marked delivered — the
+  /// letter then sat in the notebook, never re-offered to that peer. A packet that did
+  /// not go out stays unmarked, so the next connect or heartbeat tries again.
+  ///
+  /// Concurrent callers COALESCE rather than overlap (two flushes to one endpoint would
+  /// double-send) — but a request that arrives mid-flush is remembered and served by
+  /// another lap, never dropped. Dropping it would strand a fresh packet until the next
+  /// heartbeat, up to five minutes on a live link.
   Future<void> _flushPeer(String endpointId) async {
-    for (final p in engine.outboundFor(endpointId)) {
-      await transport.sendTo(endpointId, p.toWire());
-      engine.markDelivered(p.id, endpointId);
-      _log('SENT (${p.type.name}${p.hops > 0 ? " hop" : ""}) ttl=${p.ttl} hops=${p.hops} -> $endpointId');
+    if (!_flushing.add(endpointId)) { _flushAgain.add(endpointId); return; }
+    try {
+      var again = true;
+      while (again) {
+        _flushAgain.remove(endpointId);
+        var failed = false;
+        for (final p in engine.outboundFor(endpointId)) {
+          final ok = await transport.sendTo(endpointId, p.toWire());
+          if (!ok) {
+            _log('SEND FAILED -> $endpointId: ${p.type.name} stays queued for retry');
+            failed = true;
+            break; // the link is suspect; leave the rest queued rather than burn them
+          }
+          engine.markDelivered(p.id, endpointId);
+          _log('SENT (${p.type.name}${p.hops > 0 ? " hop" : ""}) ttl=${p.ttl} hops=${p.hops} -> $endpointId');
+        }
+        // Don't spin on a broken link; the transferFailure handler re-arms deliveries.
+        again = !failed && _flushAgain.contains(endpointId);
+      }
+    } finally {
+      _flushing.remove(endpointId);
+      _flushAgain.remove(endpointId);
     }
   }
 
@@ -209,50 +357,98 @@ class MeshController extends StateNotifier<MeshState> {
   }
 
   // ---------- OUTBOUND API (debug cockpit now, real UI in Batch-4) ----------
-  Future<void> fireSos({required SosCategory category, String text = ''}) async {
-    double? lat, lng;
-    // GHOST LAW: one active own-SOS per device. If one exists (even restored
-    // after a process kill), re-arm the visible state and refuse a second one —
-    // a cancel targets ONE id; a stray second SOS would ghost forever.
-    final selfId = ref.read(identityProvider)?.selfId;
-    for (final p in engine.notebook.reversed) {
-      if (p.type == PacketType.sos && p.senderId == selfId && !engine.isResolved(p.id)) {
-        _log('OWN SOS already ACTIVE — use I\'M SAFE first');
-        state = state.copyWith(ownActiveSosId: p.id);
-        return;
-      }
+  /// Returns null when the letter was originated, or the reason it was refused.
+  Future<SosRefusal?> fireSos({required SosCategory category, String text = ''}) async {
+    // FIRST-FRAME LAW: the hold button is live before start()'s microtask builds the engine.
+    if (_engine == null) { _log('Mesh still starting — SOS not sent'); return SosRefusal.notReady; }
+
+    // RE-ENTRANCY GATE: this method awaits GPS for up to 4s, so two
+    // fast taps could BOTH pass the ghost-law check below and originate two SOSes.
+    // A cancel targets ONE id, so the second would ghost forever. One at a time.
+    if (_firing) { _log('SOS already being sent — repeat press ignored'); return SosRefusal.busy; }
+
+    final since = _lastSosAt == null ? null : DateTime.now().difference(_lastSosAt!);
+    if (since != null && since < kSosCooldown) {
+      _log('SOS COOLDOWN — ${(kSosCooldown - since).inSeconds + 1}s left');
+      return SosRefusal.cooldown;
     }
-    try { // GPS best-effort: null after ~4s, send NEVER blocked (indoor-law)
-      final last = await Geolocator.getLastKnownPosition();
-      final pos = last ?? await Geolocator.getCurrentPosition(
-          locationSettings: AndroidSettings(accuracy: LocationAccuracy.medium, timeLimit: const Duration(seconds: 4)));
-      lat = pos.latitude; lng = pos.longitude;
-    } catch (_) {}
-    final r = engine.sendSos(category: category, text: text, lat: lat, lng: lng);
-    _log(r.note); state = state.copyWith(ownActiveSosId: r.packet?.id);
+
+    // GHOST LAW: one active own-SOS per device. If one exists (even restored
+    // after a process kill), re-arm the visible state and refuse a second one.
+    final existing = engine.ownActiveSos();
+    if (existing != null) {
+      _log('OWN SOS already ACTIVE — use I\'M SAFE first');
+      state = state.copyWith(ownActiveSosId: existing.id);
+      return SosRefusal.alreadyActive;
+    }
+
+    _firing = true;
+    try {
+      double? lat, lng;
+      try { // GPS best-effort: null after ~4s, send NEVER blocked (indoor-law)
+        final last = await Geolocator.getLastKnownPosition();
+        final pos = last ?? await Geolocator.getCurrentPosition(
+            locationSettings: AndroidSettings(accuracy: LocationAccuracy.medium, timeLimit: const Duration(seconds: 4)));
+        lat = pos.latitude; lng = pos.longitude;
+      } catch (_) {}
+      // Re-check AFTER the await: an inbound cancel or a restore could have landed.
+      final raced = engine.ownActiveSos();
+      if (raced != null) {
+        _log('OWN SOS appeared while locating — not sending a second one');
+        state = state.copyWith(ownActiveSosId: raced.id);
+        return SosRefusal.alreadyActive;
+      }
+      final r = engine.sendSos(category: category, text: text, lat: lat, lng: lng);
+      _lastSosAt = DateTime.now();
+      _log(r.note); state = state.copyWith(ownActiveSosId: r.packet?.id);
+      _refreshCounts(); _persist(); _flushAll();
+      final me = ref.read(identityProvider)?.name ?? 'unknown';
+      unawaited(ref.read(bridgeProvider).onPacket(r.packet!, me).then(_log));
+    } finally {
+      _firing = false; // never leave the button dead, even if GPS or the bridge threw
+    }
+    return null; // sent
+  }
+
+  Future<void> imSafe() async {
+    if (_engine == null) { _log('Mesh still starting — try again in a moment'); return; }
+    String? id = state.ownActiveSosId;
+    if (id == null || _engine!.isResolved(id)) {
+      id = engine.ownActiveSos()?.id; // RAM lost it after a process kill — the notebook did not
+    }
+    if (id == null) { _log('Nothing active to resolve'); return; }
+    final r = engine.sendCancel(id);
+    _log('I AM SAFE -> resolve ${r.targetId}');
+    state = state.copyWith(clearOwnSos: true); // only ownActiveSosId is purged
     _refreshCounts(); _persist(); _flushAll();
     final me = ref.read(identityProvider)?.name ?? 'unknown';
     unawaited(ref.read(bridgeProvider).onPacket(r.packet!, me).then(_log));
   }
 
-  Future<void> imSafe() async {
-    String? id = state.ownActiveSosId;
-    if (id == null || _engine!.isResolved(id)) {
-      // process-restart path: ownActiveSosId died in RAM — recover from the persisted notebook
-      final selfId = ref.read(identityProvider)?.selfId;
-      for (final p in engine.notebook.reversed) {
-        if (p.type == PacketType.sos && p.senderId == selfId && !engine.isResolved(p.id)) { id = p.id; break; }
-      }
-    }
-    if (id == null) { _log('Nothing active to resolve'); return; }
-    final r = engine.sendCancel(id);
-    _log('I AM SAFE -> resolve ${r.targetId}');
-    state = MeshState(transportUp: state.transportUp, peers: state.peers,
-        seenCount: state.seenCount, notebookCount: state.notebookCount,
-        log: state.log, alertPacket: state.alertPacket); // ownActiveSosId purged
-    _refreshCounts(); _persist(); _flushAll();
-    final me = ref.read(identityProvider)?.name ?? 'unknown';
-    unawaited(ref.read(bridgeProvider).onPacket(r.packet!, me).then(_log));
+  /// Acknowledge ONE alert — tapped by the user, or resolved remotely by its sender.
+  /// The siren keeps running while other victims are still unacknowledged; it only stops
+  /// when the queue empties. Unknown ids are ignored, so a resolve for something we never
+  /// alerted on can never silence a live alarm.
+  Future<void> dismissAlert(String packetId) async {
+    if (!state.alertQueue.any((p) => p.id == packetId)) return;
+    final rest = state.alertQueue.where((p) => p.id != packetId).toList();
+    if (rest.isEmpty) { await stopSiren(); return; } // stopSiren empties the queue
+    state = state.copyWith(alertQueue: rest);
+    _log('ALERT ACKNOWLEDGED — ${rest.length} still waiting');
+  }
+
+  /// REHEARSAL RESET (Settings): local amnesia between demo runs. Wipes this phone's
+  /// notebook, dedup memory and delivery books, silences any alert, and rewrites the
+  /// snapshot on disk so a relaunch does not resurrect it. Peers keep their own copies.
+  Future<void> clearNotebook() async {
+    if (_engine == null) return;
+    _engine!.clearNotebook();
+    await stopSiren();                              // kills the siren AND clears alertPacket
+    state = state.copyWith(clearOwnSos: true);      // the SOS banner has nothing to point at
+    _lastSosAt = null;                              // a fresh run must not inherit the cooldown
+    _refreshCounts();
+    await _persist();
+    _log('NOTEBOOK CLEARED (this phone only — peers still carry their copies)');
   }
 
   Future<void> _heartbeat() async {
@@ -260,27 +456,65 @@ class MeshController extends StateNotifier<MeshState> {
     if (r != null) { _log(r.note); _flushAll(); _persist(); }
   }
 
-  // ---------- Siren (temporary debug rig; alert service arrives Batch-4) ----------
+  // ---------- Siren + haptics (a muted or pocketed phone must STILL wake its owner) ----------
   Future<void> _playSiren() async {
+    final gen = _bumpSiren();
+    _buzzAlarm(gen);
     try {
       await _siren.setReleaseMode(ReleaseMode.loop);
-      await _siren.play(AssetSource('audio/siren.mp3'));
-    } catch (_) {}
+      await _siren.setVolume(1.0);
+      if (gen != _sirenGen) return; // silenced while the player was warming up
+      await _siren.play(AssetSource(kSirenAsset));
+    } catch (e) {
+      _log('SIREN failed ($e) — vibration only');
+    }
   }
+
+  /// Every siren start/stop takes a ticket. Delayed work compares its ticket before
+  /// acting, so nothing queued by a previous alarm can touch a newer one.
+  int _bumpSiren() => ++_sirenGen;
+
+  /// Spaced heavy impacts ≈ alarm pattern, no extra dependency, works on silent mode.
+  void _buzzAlarm(int gen) {
+    for (var i = 0; i < 6; i++) {
+      Future.delayed(Duration(milliseconds: 400 * i), () {
+        if (gen != _sirenGen) return; // silenced — a phone must stop buzzing when told to
+        HapticFeedback.heavyImpact();
+      });
+    }
+  }
+
   Future<void> sirenTest() async {
+    final gen = _bumpSiren();
+    _buzzAlarm(gen);
     try {
       await _siren.setReleaseMode(ReleaseMode.stop);
-      await _siren.play(AssetSource('audio/siren.mp3'));
-      Future.delayed(const Duration(seconds: 2), () => _siren.stop());
-    } catch (_) {}
+      await _siren.setVolume(1.0);
+      await _siren.play(AssetSource(kSirenAsset));
+      // TICKET CHECK: without it, this delayed stop() could cut off a REAL siren that
+      // started in the meantime — leaving a live emergency showing on screen in silence.
+      Future.delayed(const Duration(seconds: 2), () {
+        if (gen != _sirenGen) return;
+        _siren.stop();
+      });
+    } catch (e) {
+      _log('SIREN TEST failed ($e) — vibration only');
+    }
   }
+
   Future<void> stopSiren() async {
+    _bumpSiren(); // invalidate pending haptics and any test's delayed stop()
     try { await _siren.stop(); } catch (_) {}
     state = state.copyWith(clearAlert: true);
-    unawaited(FlutterForegroundTask.updateService(
-      notificationTitle: 'AidBridge mesh active',
-      notificationText: 'Relaying SOS packets. Keep this app alive.',
-    ));
+    unawaited(_notify('AidBridge mesh active', 'Relaying SOS packets. Keep this app alive.'));
+  }
+
+  /// The service can be dead (OEM killer, swipe) — an unguarded updateService would
+  /// throw into the void and take the isolate's error handler with it.
+  Future<void> _notify(String title, String text) async {
+    try {
+      await FlutterForegroundTask.updateService(notificationTitle: title, notificationText: text);
+    } catch (_) {}
   }
 
   void _refreshCounts() {

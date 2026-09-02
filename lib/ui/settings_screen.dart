@@ -13,12 +13,20 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _name = TextEditingController(); final _phone = TextEditingController();
+  bool _restarting = false;
 
   @override
   void initState() {
     super.initState();
     final id = ref.read(identityProvider);
     _name.text = id?.name ?? ''; _phone.text = id?.phone ?? '';
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _phone.dispose();
+    super.dispose();
   }
 
   @override
@@ -32,9 +40,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       TextField(controller: _phone, keyboardType: TextInputType.phone, decoration: InputDecoration(labelText: s.phoneOpt)),
       const SizedBox(height: 8),
       FilledButton(onPressed: () async {
-        await ref.read(identityProvider.notifier).setName(_name.text);
-        await ref.read(identityProvider.notifier).setPhone(_phone.text);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.save + ' ✓')));
+        final messenger = ScaffoldMessenger.of(context); // capture BEFORE the await gap
+        // Onboarding demands a call sign; Settings must not quietly allow erasing it, or this
+        // phone starts advertising as an empty name and every alert card it sends reads blank.
+        if (_name.text.trim().isEmpty) {
+          messenger.showSnackBar(SnackBar(content: Text(s.nameRequired)));
+          return;
+        }
+        try {
+          await ref.read(identityProvider.notifier).setName(_name.text.trim());
+          await ref.read(identityProvider.notifier).setPhone(_phone.text.trim());
+          messenger.showSnackBar(SnackBar(content: Text('${s.save} ✓')));
+        } catch (_) {
+          messenger.showSnackBar(SnackBar(content: Text(s.saveFailed)));
+        }
       }, child: Text(s.save)),
       const SizedBox(height: 18),
       Container(
@@ -54,16 +73,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         Text('${s.role}: ', style: const TextStyle(color: AC.dim)),
         const SizedBox(width: 8),
         Expanded(child: DropdownButtonFormField<String>(
-          value: id?.role ?? 'civilian',
+          initialValue: id?.role ?? 'civilian',
           decoration: const InputDecoration(),
           items: [DropdownMenuItem(value: 'civilian', child: Text(s.civilian)),
             DropdownMenuItem(value: 'ngo', child: Text(s.ngo))],
           onChanged: (v) async {
             if (v == null || v == id?.role) return;
-            // LAW: role change = FULL STOP, swap identity, restart, re-route (8009 armor)
+            final router = GoRouter.of(context); // captured BEFORE the await gap
+            // LAW: role change = FULL STOP, swap identity, re-route (the target shell
+            // restarts the mesh in its initState => clean 8009 re-handshake).
             await ref.read(meshProvider.notifier).stop();
             await ref.read(identityProvider.notifier).setRole(v);
-            if (mounted) context.go(v == 'ngo' ? '/ngo' : '/civilian');
+            router.go(v == 'ngo' ? '/ngo' : '/civilian');
           },
         )),
       ]),
@@ -72,12 +93,32 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         Text('${s.language}: ', style: const TextStyle(color: AC.dim)),
         const SizedBox(width: 8),
         Expanded(child: DropdownButtonFormField<AppLang>(
-          value: ref.watch(localeProvider),
+          initialValue: ref.watch(localeProvider),
           items: const [DropdownMenuItem(value: AppLang.en, child: Text('English')),
             DropdownMenuItem(value: AppLang.ur, child: Text('اردو'))],
           onChanged: (v) { if (v != null) ref.read(localeProvider.notifier).set(v); },
         )),
       ]),
+      if (m.radioWarning != null) ...[
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: AC.surface, borderRadius: BorderRadius.circular(AR.r12),
+              border: Border.all(color: AC.primary)),
+          child: Row(children: [
+            const Icon(Icons.warning_amber_rounded, color: AC.primary),
+            const SizedBox(width: 10),
+            Expanded(child: Text(m.radioWarning!, style: const TextStyle(color: AC.dim, fontSize: 12))),
+            TextButton(
+              onPressed: () async {
+                await ref.read(meshProvider.notifier).openRadioSettings();
+                await ref.read(meshProvider.notifier).refreshRadioWarning();
+              },
+              child: Text(s.fixIt, style: const TextStyle(color: AC.primary, fontWeight: FontWeight.w900)),
+            ),
+          ]),
+        ),
+      ],
       const SizedBox(height: 12),
       OutlinedButton.icon(
         style: OutlinedButton.styleFrom(side: const BorderSide(color: AC.border), minimumSize: const Size.fromHeight(kMinTarget)),
@@ -85,6 +126,67 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         icon: const Icon(Icons.volume_up, color: AC.primary),
         label: Text(s.sirenTest, style: const TextStyle(color: AC.text)),
       ),
+      const SizedBox(height: 12),
+      // DEMO LIFELINE: recycles radios + native state without losing the notebook.
+      OutlinedButton.icon(
+        style: OutlinedButton.styleFrom(side: const BorderSide(color: AC.primary), minimumSize: const Size.fromHeight(kMinTarget)),
+        onPressed: _restarting ? null : () async {
+          setState(() => _restarting = true);
+          await ref.read(meshProvider.notifier).restart();
+          if (mounted) setState(() => _restarting = false);
+        },
+        icon: _restarting
+            ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: AC.primary))
+            : const Icon(Icons.refresh, color: AC.primary),
+        label: Text(_restarting ? s.restartingMesh : s.restartMesh,
+            style: const TextStyle(color: AC.text, fontWeight: FontWeight.w800)),
+      ),
+      const SizedBox(height: 12),
+      // REHEARSAL RESET: wipes local state between demo runs so every run starts clean.
+      OutlinedButton.icon(
+        style: OutlinedButton.styleFrom(side: const BorderSide(color: AC.border), minimumSize: const Size.fromHeight(kMinTarget)),
+        onPressed: () => _confirmClear(s),
+        icon: const Icon(Icons.delete_sweep, color: AC.mute),
+        label: Text(s.clearNotebook, style: const TextStyle(color: AC.text)),
+      ),
+      const SizedBox(height: 12),
+      // Live mesh chatter: makes an invisible radio protocol visible (demo + debugging).
+      Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(color: AC.surface, borderRadius: BorderRadius.circular(AR.r12), border: Border.all(color: AC.border)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('MESH LOG', style: TextStyle(color: AC.dim, fontWeight: FontWeight.w700, fontSize: 12)),
+          const SizedBox(height: 6),
+          if (m.log.isEmpty)
+            const Text('—', style: TextStyle(color: AC.mute, fontSize: 11))
+          else
+            for (final line in m.log.take(12))
+              Padding(padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(line, style: const TextStyle(color: AC.mute, fontSize: 11), maxLines: 2, overflow: TextOverflow.ellipsis)),
+        ]),
+      ),
     ]);
+  }
+
+  /// Destructive and irreversible — never one stray tap away.
+  Future<void> _confirmClear(S s) async {
+    final messenger = ScaffoldMessenger.of(context); // captured BEFORE the await gap
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AC.surface,
+        title: Text(s.clearNotebook, style: const TextStyle(color: AC.text)),
+        content: Text(s.clearNotebookQ, style: const TextStyle(color: AC.dim)),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false),
+              child: Text(s.cancel, style: const TextStyle(color: AC.dim))),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(true),
+              child: Text(s.erase, style: const TextStyle(color: AC.sos, fontWeight: FontWeight.w900))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await ref.read(meshProvider.notifier).clearNotebook();
+    messenger.showSnackBar(SnackBar(content: Text(s.notebookCleared)));
   }
 }

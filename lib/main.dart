@@ -26,6 +26,9 @@ class AidBridgeApp extends ConsumerWidget {
         debugShowCheckedModeBanner: false,
         theme: buildAidBridgeTheme(),
         routerConfig: router,
+        // The in-app language picker must reach Material's OWN widgets too, or a user reading
+        // Urdu still gets English date pickers, dialog buttons and semantics labels.
+        locale: Locale(s.isRtl ? 'ur' : 'en'),
         supportedLocales: const [Locale('en'), Locale('ur')],
         localizationsDelegates: const [
           GlobalMaterialLocalizations.delegate,

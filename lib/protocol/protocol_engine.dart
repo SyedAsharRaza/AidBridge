@@ -42,6 +42,20 @@ class ProtocolEngine {
   int get seenCount => _seen.length;
   bool isResolved(String id) =>
       _notebook.any((p) => p.type == PacketType.cancel && p.targetId == id);
+
+  AidPacket? _byId(String id) {   // notebook is capped at kMaxNotebook — a linear scan is free
+    for (final p in _notebook) { if (p.id == id) return p; }
+    return null;
+  }
+
+  /// THE ONE TRUTH for "do I have an SOS out right now?" — newest own unresolved
+  /// SOS in the notebook. UI, ghost-law and heartbeat all read THIS (never re-scan).
+  AidPacket? ownActiveSos() {
+    for (final p in _notebook.reversed) {
+      if (p.type == PacketType.sos && p.senderId == selfId && !isResolved(p.id)) return p;
+    }
+    return null;
+  }
   PacketStatus statusOf(AidPacket p, DateTime now) {
     if (isResolved(p.id)) return PacketStatus.resolved;
     if (p.createdAt > 0 && now.difference(DateTime.fromMillisecondsSinceEpoch(p.createdAt * 1000, isUtc: true)) > kPacketLifetime) {
@@ -74,7 +88,7 @@ class ProtocolEngine {
       {SosCategory? category, String text = '', double? lat, double? lng, String? targetId}) {
     return AidPacket(
       id: _newId(), type: type, senderId: selfId, senderName: selfName,
-      phone: selfPhone, category: category, text: text, lat: lat, lng: lng,
+      phone: selfPhone, category: category, text: clampText(text), lat: lat, lng: lng,
       createdAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
       targetId: targetId, ttl: kMaxTtl, hops: 0,
     );
@@ -156,18 +170,35 @@ class ProtocolEngine {
   }
 
   // ---------- HEARTBEAT: my unresolved SOS re-broadcasts on a rhythm ----------
+  /// Heartbeat fuel is SPENT once an SOS is resolved, expired, or evicted from the
+  /// notebook. Burning it off every tick is what stops dead SOSes from re-arming
+  /// delivery books forever (the duplicate-alert-on-relay scar).
+  bool _sosSpent(String id, DateTime now) {
+    final p = _byId(id);
+    return p == null || statusOf(p, now) != PacketStatus.active;
+  }
+
   EngineReaction? heartbeatTick(DateTime now) {
+    _myActiveSos.removeWhere((id) => _sosSpent(id, now)); // every tick, cheap
     if (now.difference(_lastBeat) < kHeartbeat) return null;
-    final alive = _myActiveSos.where((id) =>
-    !isResolved(id) && now.difference(DateTime.fromMillisecondsSinceEpoch(
-        _notebook.firstWhere((p) => p.id == id, orElse: () => _notebook.last).createdAt * 1000, isUtc: true)) < kPacketLifetime).toList();
-    if (alive.isEmpty) return null;
+    if (_myActiveSos.isEmpty) return null;
     _lastBeat = now;
-    for (final id in alive) { _deliveredTo[id] = {}; } // re-arm delivery book for all
-    return EngineReaction(PacketAction.heartbeat, note: 'HEARTBEAT: re-broadcasting ${alive.length} own SOS');
+    for (final id in _myActiveSos) { _deliveredTo[id] = {}; } // re-arm delivery book
+    return EngineReaction(PacketAction.heartbeat,
+        note: 'HEARTBEAT: re-broadcasting ${_myActiveSos.length} own SOS');
   }
 
   // ---------- PERSISTENCE (identity + notebook survive restarts) ----------
+  /// FULL LOCAL AMNESIA — the rehearsal reset. Wipes carried letters, dedup memory,
+  /// delivery books and heartbeat fuel on THIS device only; peers keep their copies.
+  void clearNotebook() {
+    _notebook.clear();
+    _seen.clear();
+    _deliveredTo.clear();
+    _myActiveSos.clear();
+    _lastBeat = DateTime.fromMillisecondsSinceEpoch(0);
+  }
+
   String snapshot() => jsonEncode({
     'seen': _seen.toList(),
     'notebook': _notebook.map((p) => p.toJson()).toList(),

@@ -59,6 +59,32 @@ class S {
   String get save => _p('SAVE', 'محفوظ کریں');
   String get language => _p('Language', 'زبان');
   String get noAlerts => _p('No distress signals in the notebook yet.', 'ابھی کوئی ایس او ایس نہیں ملا۔');
+  String get chooseRole => _p('I am joining as', 'میں شامل ہو رہا ہوں بطور');
+  String get civilianHint => _p('Send SOS and relay others', 'ایس او ایس بھیجیں اور دوسروں کا پیغام آگے پہنچائیں');
+  String get ngoHint => _p('Monitor incidents, coordinate relief', 'واقعات دیکھیں، امداد کو منظم کریں');
+  String get restartMesh => _p('RESTART MESH', 'میش دوبارہ شروع کریں');
+  String get restartingMesh => _p('Restarting mesh…', 'میش دوبارہ شروع ہو رہا ہے…');
+  String get fixIt => _p('FIX', 'ٹھیک کریں');
+  String get radiosOffTitle => _p('RADIOS OFF', 'ریڈیو بند ہیں');
+  String get clearNotebook => _p('CLEAR NOTEBOOK', 'نوٹ بک خالی کریں');
+  String get clearNotebookQ => _p('Erase every carried letter on THIS phone? Nearby phones keep their own copies.',
+      'اس فون پر محفوظ تمام پیغامات مٹا دییں؟ قریبی فون اپنی نقل رکھیں گے۔');
+  String get cancel => _p('CANCEL', 'منسوخ');
+  String get erase => _p('ERASE', 'مٹا دیں');
+  String get notebookCleared => _p('Notebook cleared', 'نوٹ بک خالی کر دی گئی');
+  String get silence => _p('SILENCE', 'خاموش کریں');
+  String get nextAlert => _p('GOT IT — NEXT ALERT', 'سمجھ گیا — اگلا الرٹ');
+  String get nameRequired => _p('Enter a call sign first — it is how rescuers will see you',
+      'پہلے اپنا نام لکھیں — ریسکیو ٹیم آپ کو اسی نام سے دیکھے گی');
+  String get saveFailed => _p('Could not save on this phone — try once more',
+      'اس فون پر محفوظ نہیں ہو سکا — دوبارہ کوشش کریں');
+  String get sosNotReady => _p('Mesh is still starting — try again in a moment',
+      'میش ابھی شروع ہو رہا ہے — ایک لمحے بعد دوبارہ کوشش کریں');
+  String get sosBusy => _p('Your SOS is being sent…', 'آپ کا ایس او ایس بھیجا جا رہا ہے…');
+  String get sosCooldown => _p('Just sent — wait a few seconds before sending another',
+      'ابھی بھیجا گیا ہے — دوبارہ بھیجنے سے پہلے چند لمحے رکیں');
+  String get sosAlreadyActive => _p('Your SOS is already active — tap I\'M SAFE first',
+      'آپ کا ایس او ایس پہلے سے فعال ہے — پہلے میں محفوظ ہوں دبائیں');
 }
 
 String timeAgo(int epochSec, {bool ur = false}) {
