@@ -164,7 +164,7 @@ Requirements:
 
 ```bash
 flutter analyze     # clean
-flutter test        # 26 tests on the pure-Dart protocol engine
+flutter test        # 31 tests on the pure-Dart protocol engine
 ```
 
 The engine tests cover: wire round-trip, garbage rejection, relay-only mutation,
@@ -173,6 +173,12 @@ send, delivery-book retry-on-failure, cancel resolution, 48 h expiry, heartbeat
 re-arming, spent-heartbeat-fuel burn-off, the 500-char anti-amplification cap
 (including surrogate-safe truncation), the cancel→siren matching contract, the
 rehearsal reset, and crash recovery via snapshot/restore.
+
+**False-alarm laws** (a phone must only scream for a live emergency) are tested too:
+a resolve that arrives *before* its SOS silences it, resolves are handed to a joining
+phone *ahead* of the SOSes they close, letters past 48 h are no longer relayed, an SOS
+delivered out of someone's storage is filed rather than screamed — and, in the other
+direction, a live SOS still takes over the screen even when the sender's clock is wrong.
 
 ---
 

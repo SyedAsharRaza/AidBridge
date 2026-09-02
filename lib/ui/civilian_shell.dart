@@ -18,6 +18,7 @@ class CivilianShell extends ConsumerStatefulWidget {
 class _CivilianShellState extends ConsumerState<CivilianShell> with SingleTickerProviderStateMixin {
   late final TabController _tabs = TabController(length: 3, vsync: this);
   bool _alertOpen = false; // ONE takeover for a whole burst — it re-renders per queued victim
+  bool _takeoverPending = false; // scheduled for the next frame, not yet shown
   BuildContext? _alertCtx;  // the takeover's own route context, so a remote resolve can close it
 
   @override
@@ -34,7 +35,12 @@ class _CivilianShellState extends ConsumerState<CivilianShell> with SingleTicker
     // ONE dialog serves the whole queue: it re-renders itself for each victim in turn, so
     // we neither stack modals on a panicking user nor silently drop the second alarm.
     final hasAlert = ref.watch(meshProvider.select((m) => m.alertQueue.isNotEmpty));
-    if (hasAlert && !_alertOpen) {
+    // _takeoverPending, not _alertOpen, is the schedule gate: _alertOpen is only set when the
+    // callback RUNS, so two builds inside one frame used to queue two dialogs. The second
+    // one's context overwrote _alertCtx, and closing the takeover then popped the wrong
+    // route — leaving a screaming screen with a dead button on top of a silenced mesh.
+    if (hasAlert && !_alertOpen && !_takeoverPending) {
+      _takeoverPending = true;
       WidgetsBinding.instance.addPostFrameCallback((_) => _showTakeover());
     }
     // The queue emptied (last one acknowledged, or every sender resolved remotely).
@@ -65,7 +71,25 @@ class _CivilianShellState extends ConsumerState<CivilianShell> with SingleTicker
   }
 
   void _showTakeover() {
+    _takeoverPending = false;
+    // The queue can empty between the build that asked for this and the frame that runs it —
+    // and the shell can be gone entirely (role switch, hot reload) by then.
+    if (!mounted || _alertOpen || ref.read(meshProvider).alertQueue.isEmpty) return;
     _alertOpen = true;
+    try {
+      _openTakeover();
+    } catch (e) {
+      // THE FLAG MUST NEVER LATCH. If it stuck true with no dialog on screen, every later
+      // alert would sound the siren with no visible way to stop it and RESTART MESH became
+      // the only off switch. Release the flag, and refuse to leave an alarm nobody can end.
+      _alertOpen = false;
+      _alertCtx = null;
+      ref.read(meshProvider.notifier).stopSiren();
+      debugPrint('AidBridge: takeover could not open ($e) — siren silenced instead');
+    }
+  }
+
+  void _openTakeover() {
     showDialog(context: context, barrierDismissible: false, barrierColor: const Color(0xF2120506),
       builder: (ctx) {
         _alertCtx = ctx;

@@ -9,6 +9,13 @@ const int kMaxNotebook = 200; // store-and-forward cap
 const Duration kPacketLifetime = Duration(hours: 48);  // EXPIRED status
 const Duration kHeartbeat = Duration(minutes: 5);      // own-SOS rebroadcast
 
+/// THE HISTORY/ALARM LINE. A phone that joins a mesh is handed the WHOLE notebook at
+/// once, so without this every letter of the last two days arrives as a fresh emergency
+/// and the phone screams the moment it connects. Older letters are still stored, still
+/// relayed and still listed in ALERTS — they just do not take over the screen.
+/// Unknown or future timestamps count as fresh: a wrong clock must never mute a real SOS.
+const Duration kSirenFreshness = Duration(minutes: 30);
+
 enum PacketStatus { active, resolved, expired }
 
 /// What the UI/glue should DO with a packet the engine decided on.
@@ -62,6 +69,16 @@ class ProtocolEngine {
       return PacketStatus.expired;
     }
     return PacketStatus.active;
+  }
+
+  /// Is this letter recent enough to be an ALARM rather than a record?
+  /// A packet with no usable timestamp, or one from a phone whose clock runs ahead,
+  /// is treated as fresh — silence is the one failure mode we refuse to risk.
+  bool sirenWorthy(AidPacket p, DateTime now) {
+    if (p.createdAt <= 0) return true;
+    final age = now.difference(
+        DateTime.fromMillisecondsSinceEpoch(p.createdAt * 1000, isUtc: true));
+    return age <= kSirenFreshness;
   }
 
   String _newId() {  // per-device id + timestamp + random => collisions die (T12 law)
@@ -139,25 +156,55 @@ class ProtocolEngine {
       return EngineReaction(PacketAction.cancel, packet: p, targetId: p.targetId,
           uplink: true, note: 'RESOLVE received for ${p.targetId} (${p.senderName} is safe)');
     }
+
     // sos: relay happens via flush law at glue level (outboundFor → all peers except source).
-    return EngineReaction(PacketAction.newSos, packet: p, siren: true, uplink: true,
-        note: 'SOS from ${p.senderName} (${p.id}, ttl=${p.ttl}, hops=${p.hops})');
+    //
+    // AN ALARM IS FOR A LIVE EMERGENCY, NOT FOR HISTORY. Three ways an inbound SOS is real
+    // but must NOT take over the screen — every one of them was a field-reported false siren:
+    //   • RESOLVED: its cancel is already in our notebook (outboundFor sends resolves first,
+    //     so a phone joining a settled mesh learns "safe" before it hears the shout).
+    //   • EXPIRED: past the 48h life — nobody is waiting on it any more.
+    //   • STALE: older than kSirenFreshness, i.e. handed to us out of someone's storage.
+    // Uplink follows the same truth: re-uploading a settled SOS would flip its cloud status
+    // back to 'active' and re-open a closed case on the NGO dashboard.
+    final status = statusOf(p, now);
+    final fresh = sirenWorthy(p, now);
+    final why = switch (status) {
+      PacketStatus.resolved => ' — ALREADY RESOLVED, stored without an alarm',
+      PacketStatus.expired => ' — EXPIRED, stored without an alarm',
+      PacketStatus.active => fresh ? '' : ' — older than ${kSirenFreshness.inMinutes}min, stored without an alarm',
+    };
+    return EngineReaction(PacketAction.newSos, packet: p,
+        siren: status == PacketStatus.active && fresh,
+        uplink: status == PacketStatus.active,
+        note: 'SOS from ${p.senderName} (${p.id}, ttl=${p.ttl}, hops=${p.hops})$why');
   }
 
   // ---------- FLUSH (the POC _doFlush, distilled) ----------
   /// Packets to hand a given endpoint RIGHT NOW: own as-is (full ttl),
   /// carried at ttl-1/hops+1, TTL wall respected, per-endpoint delivery book kept.
-  List<AidPacket> outboundFor(String endpointId) {
-    final out = <AidPacket>[];
+  ///
+  /// RESOLVES TRAVEL AHEAD OF THE ALARMS THEY KILL. The notebook is insertion-ordered, so
+  /// an SOS always sat in front of its own cancel — a phone joining a settled mesh heard the
+  /// shout first and screamed until the very next packet corrected it. Cancels are cheap and
+  /// order is free, so we hand over the endings before the beginnings.
+  ///
+  /// Letters past their 48h life are not offered at all: a dead SOS re-flooding every new
+  /// phone for two days is pure noise, and it cannot be resolved any more.
+  List<AidPacket> outboundFor(String endpointId, {DateTime? now}) {
+    final t = now ?? DateTime.now().toUtc();
+    final cancels = <AidPacket>[];
+    final rest = <AidPacket>[];
     for (final p in List.of(_notebook)) {
       final delivered = _deliveredTo.putIfAbsent(p.id, () => {});
       if (delivered.contains(endpointId)) continue;
+      if (statusOf(p, t) == PacketStatus.expired) continue;
       final mine = p.senderId == selfId;
       final candidate = mine ? p : p.forRelay();
       if (candidate.ttl < 1) continue; // hop budget spent -> storage only (T11)
-      out.add(candidate);
+      (p.type == PacketType.cancel ? cancels : rest).add(candidate);
     }
-    return out;
+    return [...cancels, ...rest];
   }
 
   void markDelivered(String packetId, String endpointId) =>

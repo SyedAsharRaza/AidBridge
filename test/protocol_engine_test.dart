@@ -312,6 +312,74 @@ void main() {
     });
   });
 
+  group('false-alarm laws (every one of these was a field-reported siren)', () {
+    test('a resolve that arrives BEFORE its SOS kills the alarm the SOS would have raised', () {
+      // THE THIRD-PHONE SCAR: two phones settle a case, a third joins later and was handed
+      // the shout before the ending, so it screamed about an emergency that was already over.
+      final e = _engine();
+      final c = e.ingest('e1',
+          _wireFrom(id: 'c1', senderId: 'them', type: PacketType.cancel, targetId: 'p1'), now);
+      expect(c.action, PacketAction.cancel);
+
+      final s = e.ingest('e1', _wireFrom(id: 'p1', senderId: 'them'), now);
+      expect(s.action, PacketAction.newSos); // still stored and still relayed — history matters
+      expect(s.siren, isFalse);              // …but nobody's phone screams for a closed case
+      expect(s.uplink, isFalse);             // and the cloud case is NOT re-opened as active
+      expect(e.notebook.length, 2);
+      expect(e.statusOf(s.packet!, now), PacketStatus.resolved);
+    });
+
+    test('RESOLVES TRAVEL FIRST: a joining phone is handed cancels before SOSes', () {
+      // This ordering is what makes the law above fire instead of merely correcting itself
+      // a packet later — the difference between silence and a burst of siren.
+      final e = _engine();
+      e.ingest('a', _wireFrom(id: 'p1', senderId: 'them'), now);
+      e.ingest('a', _wireFrom(id: 'p2', senderId: 'other'), now);
+      e.ingest('a',
+          _wireFrom(id: 'c1', senderId: 'them', type: PacketType.cancel, targetId: 'p1'), now);
+
+      final out = e.outboundFor('newcomer', now: now);
+      expect(out.length, 3);
+      expect(out.first.type, PacketType.cancel);   // the ending leads
+      expect(out.first.targetId, 'p1');
+      expect(out.skip(1).map((p) => p.id), ['p1', 'p2']); // then the shouts, in order
+    });
+
+    test('a letter past its 48h life is not offered to anybody', () {
+      final e = _engine();
+      e.ingest('a', _wireFrom(id: 'old', senderId: 'them',
+          createdAt: now.subtract(const Duration(hours: 49)).millisecondsSinceEpoch ~/ 1000), now);
+      e.ingest('a', _wireFrom(id: 'new', senderId: 'them'), now);
+
+      expect(e.notebook.length, 2);                       // still remembered locally
+      expect(e.outboundFor('peer', now: now).map((p) => p.id), ['new']);
+    });
+
+    test('an SOS handed to us out of storage is filed, not screamed', () {
+      // A phone joining a mesh receives the WHOLE notebook at once. Without a freshness
+      // line, every unresolved letter of the last two days arrives as a fresh emergency —
+      // 'I open the app and it rings immediately'.
+      final e = _engine();
+      final r = e.ingest('a', _wireFrom(id: 'p1', senderId: 'them',
+          createdAt: now.subtract(const Duration(hours: 3)).millisecondsSinceEpoch ~/ 1000), now);
+      expect(r.action, PacketAction.newSos);
+      expect(r.siren, isFalse);
+      expect(e.notebook.length, 1);                       // readable in ALERTS
+      expect(e.outboundFor('peer', now: now), hasLength(1)); // and still relayed onward
+    });
+
+    test('a live emergency still takes over the screen — including one with a broken clock', () {
+      final e = _engine();
+      expect(e.ingest('a', _wireFrom(id: 'p1', senderId: 'them'), now).siren, isTrue);
+      // A phone whose clock is unset or ahead must never be silenced by the freshness line:
+      // in an app whose whole promise is being heard, silence is the unacceptable failure.
+      expect(e.ingest('a', _wireFrom(id: 'p2', senderId: 'them', createdAt: 0), now).siren, isTrue);
+      expect(e.ingest('a', _wireFrom(id: 'p3', senderId: 'them',
+          createdAt: now.add(const Duration(hours: 2)).millisecondsSinceEpoch ~/ 1000), now).siren,
+          isTrue);
+    });
+  });
+
   group('persistence', () {
     test('notebook, dedup memory and heartbeat fuel survive a process kill', () {
       final a = _engine();

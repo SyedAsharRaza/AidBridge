@@ -26,6 +26,25 @@ const Duration kPendingTimeout = Duration(seconds: 15);
 const Duration kNoPeerRefresh = Duration(seconds: 45); // dead-air => full radio refresh
 const int kMaxConnectTries = 3;
 
+/// EVEN A HAPPY PHONE MUST KEEP LOOKING. Android silently retires a long-running
+/// advertise/discover session while the plugin still reports it as up — so two phones that
+/// found each other early stay content forever, and a third phone scans an empty room. The
+/// pair never notices, because they have a peer. Re-arming both radios on this rhythm is
+/// what makes the third phone appear without force-stopping the other two. (0-PEERS SCAR)
+const Duration kIdleRefresh = Duration(minutes: 2);
+
+/// DEADLOCK RESCUE WINDOW. The symmetry breaker says only the lexicographically smaller
+/// name requests, which stops two phones from colliding — but it must never mean that
+/// nobody ever asks. If a peer we can see has not connected within this window we request
+/// it ourselves, whichever side we are (the waiting side allows twice as long, so the two
+/// sides can never fire in the same instant).
+const Duration kInitiatorGrace = Duration(seconds: 12);
+
+/// The native stack tears radios down asynchronously. Starting one in the same breath is
+/// how RESTART MESH came back with nothing connected while a force-stop of the whole app
+/// cured it — one settle beat on a once-per-session path buys that reliability.
+const Duration kRadioSettle = Duration(milliseconds: 900);
+
 /// NO PLUGIN CALL MAY HANG FOREVER. Every Nearby() future below is bounded, because a
 /// wedged native stack that never completes would freeze the very self-healing loops that
 /// exist to un-wedge it — and freeze stop(), which is what RESTART MESH waits on.
@@ -56,8 +75,10 @@ class NearbyConnectionsTransport implements NearbyTransport {
   final Set<String> _pending = {};                 // request in flight (gate vs 8009)
   final Map<String, Future<void>> _sendChains = {};// serialized sends per endpoint (POC race fix)
   final Map<String, DateTime> _pendingSince = {};  // when the request went out (timeout gate)
+  final Map<String, DateTime> _foundAt = {};       // first sighting (symmetry-breaker rescue clock)
   final Map<String, int> _tries = {};              // connect attempts per endpoint
   final Map<String, DateTime> _lastHeard = {};     // last byte received (liveness truth)
+  final Map<String, String> _names = {};           // LIVE endpointId -> advertised "name·deviceId"
   Timer? _watchdog;
   Timer? _liveness;
   bool _running = false;                           // guards timers after stop()
@@ -82,8 +103,10 @@ class NearbyConnectionsTransport implements NearbyTransport {
     try { await Nearby().stopAdvertising().timeout(kRadioOp); } catch (_) {}
     try { await Nearby().stopDiscovery().timeout(kRadioOp); } catch (_) {}
     try { await Nearby().stopAllEndpoints().timeout(kRadioOp); } catch (_) {}
+    await Future.delayed(kRadioSettle); // let the native teardown land before we build on it
     _found.clear(); _connected.clear(); _pending.clear(); _sendChains.clear();
-    _pendingSince.clear(); _tries.clear(); _lastHeard.clear();
+    _pendingSince.clear(); _tries.clear(); _lastHeard.clear(); _foundAt.clear();
+    _names.clear();
     _running = true;
 
     // 2) Permissions with RESULT CHECKS (we never hope; OEM phones need manual grant sometimes)
@@ -138,6 +161,7 @@ class NearbyConnectionsTransport implements NearbyTransport {
         onEndpointFound: (id, name, serviceId) => _onEndpointFound(id, name),
         onEndpointLost: (id) {
           _found.remove(id); // no ghosts (only fires while discovering — known platform quirk)
+          _foundAt.remove(id);
           // FRESH BUDGET ON RETURN: without this, _request's "will retry if rediscovered"
           // promise was a lie. The try counter outlived the peer, so someone who failed
           // three times was blacklisted for the whole session — even after walking back
@@ -152,11 +176,26 @@ class NearbyConnectionsTransport implements NearbyTransport {
 
   // ---------- Connection lifecycle (auto-everything, 8009-proof) ----------
   void _onEndpointFound(String id, String name) {
+    // A live peer is not a discovery: re-adding it would also keep the dead-air clock
+    // permanently reset, and the clock is what triggers the radio refresh.
+    if (_connected.contains(id)) return;
+    // SAME PHONE, NEW ENDPOINT ID. Nearby mints a fresh endpoint id every time a device
+    // restarts advertising — which the watchdog now does on a rhythm, and which the peer's
+    // own app restart does too. The old connection is NOT dropped by that, so without this
+    // guard we would open a second link to a phone we are already talking to: every packet
+    // sent twice, and "2 PEERS" displayed for one device sitting on the table. Our endpoint
+    // name carries the persistent device id, so the name IS the device's identity.
+    // If the existing link is genuinely dead, liveness buries it within kPeerSilence and the
+    // next sighting connects for real — a bounded delay instead of permanent duplication.
+    if (_names.containsValue(name)) return;
+    final isNew = !_found.containsKey(id);
     _found[id] = name;
-    _lastRadioProgress = DateTime.now(); // radios ARE working — no refresh needed
+    _foundAt.putIfAbsent(id, () => DateTime.now());
+    if (isNew) _lastRadioProgress = DateTime.now(); // the radios ARE finding people
     _events.add(TransportEvent(EventType.endpointFound, endpointId: id, endpointName: name));
     // SYMMETRY-BREAKER: exactly ONE side initiates (lexicographic on "name·id"),
     // so two phones never collision-request each other. selfId-suffixed names guarantee inequality.
+    // If that side never asks, the watchdog's rescue pass asks for it. (see _watchdogPass)
     if (_myName.compareTo(name) >= 0) return; // the smaller name requests; the other auto-accepts
     _request(id, name);
   }
@@ -189,6 +228,11 @@ class NearbyConnectionsTransport implements NearbyTransport {
   }
 
   void _onConnectionInitiated(String id, ConnectionInfo info) {
+    // THE ACCEPTING SIDE NEVER DISCOVERED THIS PEER, so this callback is the only place it
+    // learns who they are. Without it the auto-accepting half of every pair logged raw
+    // endpoint ids and — worse — held no device identity, so a peer that restarted its app
+    // could be linked twice over: every packet sent down two pipes to the same phone.
+    _found.putIfAbsent(id, () => info.endpointName);
     Nearby().acceptConnection(
       id,
       onPayLoadRecieved: (endpointId, payload) { // (plugin's own typo — keep exact)
@@ -225,15 +269,21 @@ class NearbyConnectionsTransport implements NearbyTransport {
     if (status == Status.CONNECTED) {
       final name = _found[id] ?? id;
       _found.remove(id);        // connected peers leave the found list for good (GHOST FIX)
+      _foundAt.remove(id);
       _tries.remove(id);        // fresh budget if this peer ever drops and returns
       _connected.add(id);
+      _names[id] = name;        // device identity, so a re-advertised peer is not linked twice
       _lastHeard[id] = DateTime.now();
       _lastRadioProgress = DateTime.now();
       _events.add(TransportEvent(EventType.peerConnected, endpointId: id, endpointName: name));
     } else {
       final name = _found[id];
-      _log('Connection to $id: $status${name == null ? "" : " — retrying in 3s"}');
-      if (name != null) {
+      // ONLY THE SIDE THAT DISCOVERED THEM RETRIES (_foundAt is set by discovery). The
+      // accepting side re-requesting a failed accept is how two phones cross-request each
+      // other into permanent 8009 crossfire — the initiator's own retry is the single path.
+      final mine = _foundAt.containsKey(id);
+      _log('Connection to ${name ?? id}: $status${mine ? " — retrying in 3s" : ""}');
+      if (mine && name != null) {
         Timer(const Duration(seconds: 3), () {
           if (_running && !_connected.contains(id)) _request(id, name);
         });
@@ -246,6 +296,8 @@ class NearbyConnectionsTransport implements NearbyTransport {
     _connected.remove(id);
     _sendChains.remove(id);
     _lastHeard.remove(id);
+    _pending.remove(id); _pendingSince.remove(id); // a dropped peer holds no request slot
+    _names.remove(id);
     _events.add(TransportEvent(EventType.peerDisconnected, endpointId: id, endpointName: name));
   }
 
@@ -255,8 +307,10 @@ class NearbyConnectionsTransport implements NearbyTransport {
     _connected.remove(id);
     _sendChains.remove(id);
     _lastHeard.remove(id);
+    _names.remove(id);
     _pending.remove(id); _pendingSince.remove(id);
     _found.remove(id);
+    _foundAt.remove(id);
     try { await Nearby().disconnectFromEndpoint(id); } catch (_) {}
     _events.add(TransportEvent(EventType.peerDisconnected, endpointId: id, endpointName: id));
   }
@@ -316,11 +370,44 @@ class NearbyConnectionsTransport implements NearbyTransport {
     if (!_adv) { _log('WATCHDOG: advertising is down — restarting'); await _beginAdvertising(); }
     if (!_disc) { _log('WATCHDOG: discovery is down — restarting'); await _beginDiscovery(); }
 
-    // c) THE "reopen the app to connect" CURE: total dead air means the native stack
-    //    is wedged even though it claims to be running. Recycle both radios.
-    if (_connected.isEmpty && _found.isEmpty &&
-        now.difference(_lastRadioProgress) > kNoPeerRefresh) {
-      _log('WATCHDOG: ${kNoPeerRefresh.inSeconds}s of dead air — full radio refresh');
+    // b2) DEADLOCK RESCUE — the 0-PEERS cure. Two ways a peer we can plainly SEE never
+    //     becomes a peer we can talk to, and both looked identical in the field ('third
+    //     phone says 0 peers while the other two are connected, only a force-stop fixes it'):
+    //       • the symmetry breaker made us the waiting side and the other side never asked
+    //         (its discovery had silently died, so it never even saw us);
+    //       • we were the asking side and burnt our three tries in the first few seconds.
+    //     Either way: one request per grace window, with a fresh try budget, until it sticks.
+    for (final e in Map.of(_foundAt).entries) {
+      final id = e.key;
+      if (_connected.contains(id) || _pending.contains(id)) continue;
+      final name = _found[id];
+      if (name == null) { _foundAt.remove(id); continue; }
+      // The asking side goes first; the waiting side allows double, so the two sides can
+      // never fire in the same instant and cross-request each other into 8009.
+      final grace = _myName.compareTo(name) < 0 ? kInitiatorGrace : kInitiatorGrace * 2;
+      if (now.difference(e.value) < grace) continue;
+      _log('RESCUE: $name visible ${now.difference(e.value).inSeconds}s but not connected — requesting');
+      _foundAt[id] = now;   // one attempt per window, never a hot loop
+      _tries.remove(id);    // a whole window has passed — this is not the same burst
+      _request(id, name);
+    }
+
+    // c) THE "reopen the app to connect" CURE, on two clocks:
+    //    • NOTHING CONNECTED (kNoPeerRefresh): recycle fast — as it stands this phone is
+    //      no use to anyone, so there is nothing to protect.
+    //    • CONNECTED BUT NOBODY NEW (kIdleRefresh): the case that stranded a third phone.
+    //      Two peers happy with each other never fell into the old dead-air branch, so their
+    //      retired advertise/discover sessions were never rebuilt and the newcomer stayed
+    //      invisible until BOTH of them were force-stopped.
+    //    Stopping advertising and discovery does NOT drop live connections — only
+    //    stopAllEndpoints/disconnectFromEndpoint do that — so this is safe with peers up.
+    final quiet = now.difference(_lastRadioProgress);
+    if (quiet > (_connected.isEmpty ? kNoPeerRefresh : kIdleRefresh)) {
+      _log('WATCHDOG: ${quiet.inSeconds}s without a new peer — full radio refresh');
+      // Stale sightings and spent try budgets must not survive a refresh, or the fresh
+      // discovery would be filtered out by bookkeeping from the session it just replaced.
+      _found.clear(); _foundAt.clear(); _tries.clear();
+      _pending.clear(); _pendingSince.clear();
       _adv = false; _disc = false;
       await _beginAdvertising(); // each one stops the native radio before restarting it
       await _beginDiscovery();
@@ -364,7 +451,8 @@ class NearbyConnectionsTransport implements NearbyTransport {
     try { await Nearby().stopAdvertising().timeout(kRadioOp); } catch (_) {}
     try { await Nearby().stopDiscovery().timeout(kRadioOp); } catch (_) {}
     _connected.clear(); _pending.clear(); _sendChains.clear(); _found.clear();
-    _pendingSince.clear(); _tries.clear(); _lastHeard.clear();
+    _pendingSince.clear(); _tries.clear(); _lastHeard.clear(); _foundAt.clear();
+    _names.clear();
     _adv = false; _disc = false;
     if (_serviceOn) await _stopService();
     _events.add(const TransportEvent(EventType.transportDown));

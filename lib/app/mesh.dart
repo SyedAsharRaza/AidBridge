@@ -27,10 +27,11 @@ const Duration kSosCooldown = Duration(seconds: 10);
 /// nothing is worse than one that refuses out loud. The UI localises these.
 enum SosRefusal { notReady, busy, cooldown, alreadyActive }
 
-/// How many unacknowledged takeovers we are willing to hold. Beyond this the siren and
-/// the notification still fire — only the modal is skipped, because a wall of stacked
-/// dialogs is worse than useless to someone in a panic. The ALERTS tab holds everything.
-const int kMaxAlertQueue = 5;
+/// How many unacknowledged takeovers we hold at once. The takeover renders ONE victim at a
+/// time with a `1 / N` counter, so this is a memory bound, not a screen bound. When it is
+/// full we drop the OLDEST — we never let a siren play with nothing queued behind it,
+/// because the queue is what the STOP button and an inbound resolve both reach for.
+const int kMaxAlertQueue = 20;
 
 class MeshIdentity {
   final String selfId;
@@ -128,6 +129,7 @@ class MeshController extends StateNotifier<MeshState> {
   bool _persistDirty = false;  // state changed while writing => write once more
   Future<void> _lifecycle = Future.value(); // serialises start/stop/restart
   int _sirenGen = 0;           // invalidates delayed siren/haptic work after a silence
+  bool _sirenPlaying = false;  // THE SIREN LAW: true only while an alert is queued behind it
   final Set<String> _flushing = {};   // endpoints with a flush in flight (anti double-send)
   final Set<String> _flushAgain = {}; // …and those that gained work while it ran
 
@@ -189,11 +191,19 @@ class MeshController extends StateNotifier<MeshState> {
     if (state.transportUp) { _log('mesh already up — start ignored'); return; }
     await ref.read(identityProvider.notifier).load();
     final id = ref.read(identityProvider)!;
+    final freshEngine = _engine == null;
     _engine ??= ProtocolEngine(selfId: id.selfId, selfName: id.name, selfPhone: id.phone);
-    try {
-      final f = File('${(await getApplicationDocumentsDirectory()).path}/aidbridge_notebook.json');
-      if (await f.exists()) _engine!.restore(await f.readAsString());
-    } catch (_) {}
+    // FIRST START ONLY. RESTART MESH must never re-read the disk over a live engine: the
+    // snapshot is written unawaited, so a letter that landed seconds ago may not be on disk
+    // yet — and restore() clears the notebook before refilling it, so the recovery button
+    // could quietly delete the newest SOS. It would also wipe the in-session delivery books
+    // and re-flood every connected peer with all 200 letters.
+    if (freshEngine) {
+      try {
+        final f = File('${(await getApplicationDocumentsDirectory()).path}/aidbridge_notebook.json');
+        if (await f.exists()) _engine!.restore(await f.readAsString());
+      } catch (_) {}
+    }
     _refreshCounts();
     // GHOST FIX: after a process kill the notebook remembers the SOS — so the banner must too
     final restored = _engine!.ownActiveSos();
@@ -213,11 +223,13 @@ class MeshController extends StateNotifier<MeshState> {
 
   /// Manual recovery hatch (Settings button): full stop, then a clean start.
   /// The notebook survives — only radios and native state are recycled.
-  Future<void> restart() async {
+  /// ONE serialised unit: as two separate queued ops, anything waiting on the lifecycle
+  /// lock could slip in between and drive start() while the radios were still going down.
+  Future<void> restart() => _serial(() async {
     _log('MANUAL MESH RESTART requested');
-    await stop();
-    await start();
-  }
+    await _stop();
+    await _start();
+  });
 
   /// Nearby Connections needs BOTH Bluetooth and Location switched ON. When either is
   /// off, discovery silently finds nobody — so we say it out loud instead of failing mute.
@@ -283,13 +295,19 @@ class MeshController extends StateNotifier<MeshState> {
     _log(r.note);
     // ENQUEUE, don't overwrite: two victims 200ms apart both deserve a takeover. Dedup by
     // id so the same letter arriving from a second courier cannot double-book the screen.
+    //
+    // THE SIREN LAW: the alarm sounds if and only if something is queued behind it. A siren
+    // with no queue entry cannot be reached by the STOP button or by the sender's own
+    // resolve — RESTART MESH becomes the only off switch, which is exactly how a field test
+    // found this. So we ALWAYS make room by dropping the oldest takeover (still in ALERTS)
+    // rather than sounding an alarm nothing owns.
     if (r.siren && r.packet != null && !state.alertQueue.any((p) => p.id == r.packet!.id)) {
-      if (state.alertQueue.length >= kMaxAlertQueue) {
-        _log('ALERT QUEUE FULL — ${r.packet!.senderName} is in ALERTS (no takeover)');
-      } else {
-        state = state.copyWith(alertQueue: [...state.alertQueue, r.packet!]);
+      var q = [...state.alertQueue, r.packet!];
+      if (q.length > kMaxAlertQueue) {
+        _log('ALERT QUEUE FULL — oldest takeover dropped (it stays listed in ALERTS)');
+        q = q.sublist(q.length - kMaxAlertQueue); // keep the NEWEST: freshest emergency wins
       }
-      // The alarm fires either way — a dropped modal must never mean a silent emergency.
+      state = state.copyWith(alertQueue: q);
       if (_sirenArmed) unawaited(_playSiren());
       unawaited(_notify('🆘 SOS: ${r.packet!.senderName}',
           'Distress signal received — TAP to open AidBridge'));
@@ -427,11 +445,17 @@ class MeshController extends StateNotifier<MeshState> {
 
   /// Acknowledge ONE alert — tapped by the user, or resolved remotely by its sender.
   /// The siren keeps running while other victims are still unacknowledged; it only stops
-  /// when the queue empties. Unknown ids are ignored, so a resolve for something we never
-  /// alerted on can never silence a live alarm.
+  /// when the queue empties.
+  ///
+  /// A resolve for something we never queued still enforces the siren law: if nothing is
+  /// waiting, nothing may be screaming. That is the safety net under the whole alert path —
+  /// a stray alarm can always be ended by the news that its owner is safe.
   Future<void> dismissAlert(String packetId) async {
-    if (!state.alertQueue.any((p) => p.id == packetId)) return;
     final rest = state.alertQueue.where((p) => p.id != packetId).toList();
+    if (rest.length == state.alertQueue.length) {   // not ours to acknowledge
+      if (rest.isEmpty && _sirenPlaying) await stopSiren();
+      return;
+    }
     if (rest.isEmpty) { await stopSiren(); return; } // stopSiren empties the queue
     state = state.copyWith(alertQueue: rest);
     _log('ALERT ACKNOWLEDGED — ${rest.length} still waiting');
@@ -459,6 +483,7 @@ class MeshController extends StateNotifier<MeshState> {
   // ---------- Siren + haptics (a muted or pocketed phone must STILL wake its owner) ----------
   Future<void> _playSiren() async {
     final gen = _bumpSiren();
+    _sirenPlaying = true;
     _buzzAlarm(gen);
     try {
       await _siren.setReleaseMode(ReleaseMode.loop);
@@ -504,6 +529,7 @@ class MeshController extends StateNotifier<MeshState> {
 
   Future<void> stopSiren() async {
     _bumpSiren(); // invalidate pending haptics and any test's delayed stop()
+    _sirenPlaying = false;
     try { await _siren.stop(); } catch (_) {}
     state = state.copyWith(clearAlert: true);
     unawaited(_notify('AidBridge mesh active', 'Relaying SOS packets. Keep this app alive.'));
