@@ -30,6 +30,16 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  flutter_launcher_icons: "^0.14.4"
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/icon/applogo.png"
+
+  # Adaptive settings to auto-scale inside Android safe zones
+  adaptive_icon_background: "#FAF6EE"
+  adaptive_icon_foreground: "assets/icon/applogo.png"
   flutter_lints: ^6.0.0
 
 flutter:
