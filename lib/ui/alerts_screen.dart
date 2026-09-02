@@ -16,7 +16,10 @@ class AlertsScreen extends ConsumerWidget {
     final s = ref.watch(stringsProvider);
     final m = ref.watch(meshProvider); // any mesh change re-reads the notebook (pragmatic v1)
     final ctrl = ref.read(meshProvider.notifier);
-    if (!m.transportUp) return Center(child: Text(s.offline, style: const TextStyle(color: AC.dim)));
+    // FIRST-FRAME LAW: no engine yet (or mesh stopped mid-restart) => nothing to read.
+    if (!ctrl.engineReady || !m.transportUp) {
+      return Center(child: Text(s.offline, style: const TextStyle(color: AC.dim)));
+    }
     final sosList = ctrl.engine.notebook.where((p) => p.type == PacketType.sos).toList()
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     if (sosList.isEmpty) return Center(child: Text(s.noAlerts, style: const TextStyle(color: AC.dim)));
@@ -24,7 +27,7 @@ class AlertsScreen extends ConsumerWidget {
     return ListView.separated(
       padding: const EdgeInsets.all(12),
       itemCount: sosList.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      separatorBuilder: (_, _) => const SizedBox(height: 8),
       itemBuilder: (ctx, i) {
         final p = sosList[i];
         final st = ctrl.engine.statusOf(p, DateTime.now().toUtc());

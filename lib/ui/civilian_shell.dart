@@ -17,6 +17,7 @@ class CivilianShell extends ConsumerStatefulWidget {
 class _CivilianShellState extends ConsumerState<CivilianShell> with SingleTickerProviderStateMixin {
   late final TabController _tabs = TabController(length: 3, vsync: this);
   String? _shownAlertId;
+  bool _alertOpen = false; // one takeover at a time — never stack dialogs on a burst
 
   @override
   void initState() {
@@ -30,7 +31,7 @@ class _CivilianShellState extends ConsumerState<CivilianShell> with SingleTicker
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
     final alert = ref.watch(meshProvider.select((m) => m.alertPacket));
-    if (alert != null && alert.id != _shownAlertId) {
+    if (alert != null && alert.id != _shownAlertId && !_alertOpen) {
       _shownAlertId = alert.id;
       WidgetsBinding.instance.addPostFrameCallback((_) => _showTakeover(alert));
     }
@@ -49,6 +50,7 @@ class _CivilianShellState extends ConsumerState<CivilianShell> with SingleTicker
 
   void _showTakeover(AidPacket p) {
     final s = ref.read(stringsProvider);
+    _alertOpen = true;
     showDialog(context: context, barrierDismissible: false, barrierColor: const Color(0xF2120506),
       builder: (ctx) => Dialog.fullscreen(backgroundColor: Colors.transparent,
         child: Padding(padding: const EdgeInsets.all(24),
@@ -77,7 +79,7 @@ class _CivilianShellState extends ConsumerState<CivilianShell> with SingleTicker
           ]),
         ),
       ),
-    ).then((_) => _shownAlertId = null);
+    ).then((_) { _alertOpen = false; _shownAlertId = null; });
   }
 }
 

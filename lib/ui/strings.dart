@@ -59,6 +59,13 @@ class S {
   String get save => _p('SAVE', 'محفوظ کریں');
   String get language => _p('Language', 'زبان');
   String get noAlerts => _p('No distress signals in the notebook yet.', 'ابھی کوئی ایس او ایس نہیں ملا۔');
+  String get chooseRole => _p('I am joining as', 'میں شامل ہو رہا ہوں بطور');
+  String get civilianHint => _p('Send SOS and relay others', 'ایس او ایس بھیجیں اور دوسروں کا پیغام آگے پہنچائیں');
+  String get ngoHint => _p('Monitor incidents, coordinate relief', 'واقعات دیکھیں، امداد کو منظم کریں');
+  String get restartMesh => _p('RESTART MESH', 'میش دوبارہ شروع کریں');
+  String get restartingMesh => _p('Restarting mesh…', 'میش دوبارہ شروع ہو رہا ہے…');
+  String get fixIt => _p('FIX', 'ٹھیک کریں');
+  String get radiosOffTitle => _p('RADIOS OFF', 'ریڈیو بند ہیں');
 }
 
 String timeAgo(int epochSec, {bool ur = false}) {

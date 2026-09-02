@@ -85,6 +85,31 @@ class _SosScreenState extends ConsumerState<SosScreen> {
         ]),
       ),
       const Spacer(),
+      if (m.radioWarning != null) ...[
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: AC.surface, borderRadius: BorderRadius.circular(AR.r12),
+              border: Border.all(color: AC.primary)),
+          child: Row(children: [
+            const Icon(Icons.warning_amber_rounded, color: AC.primary),
+            const SizedBox(width: 10),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(s.radiosOffTitle, style: const TextStyle(
+                  color: AC.primary, fontWeight: FontWeight.w900, fontSize: 13)),
+              Text(m.radioWarning!, style: const TextStyle(color: AC.dim, fontSize: 12)),
+            ])),
+            TextButton(
+              onPressed: () async {
+                await ctrl.openRadioSettings();
+                await ctrl.refreshRadioWarning();
+              },
+              child: Text(s.fixIt, style: const TextStyle(
+                  color: AC.primary, fontWeight: FontWeight.w900)),
+            ),
+          ]),
+        ),
+        const SizedBox(height: 8),
+      ],
       centerHolder(s, active: mySos != null && status == PacketStatus.active),
       const Spacer(),
       if (mySos != null && status == PacketStatus.active)
@@ -135,13 +160,8 @@ class _SosScreenState extends ConsumerState<SosScreen> {
     );
   }
 
-  AidPacket? _ownActiveSos(MeshController ctrl) {
-    final selfId = ref.read(identityProvider)?.selfId;
-    for (final p in ctrl.engine.notebook.reversed) {
-      if (p.type == PacketType.sos && p.senderId == selfId) {
-        return ctrl.engine.isResolved(p.id) ? null : p;
-      }
-    }
-    return null;
-  }
+  /// FIRST-FRAME LAW: build can run before start()'s microtask creates the engine.
+  /// Reads the engine's single source of truth — never re-scans the notebook itself.
+  AidPacket? _ownActiveSos(MeshController ctrl) =>
+      ctrl.engineReady ? ctrl.engine.ownActiveSos() : null;
 }

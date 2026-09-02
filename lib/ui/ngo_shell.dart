@@ -10,7 +10,6 @@ import 'package:url_launcher/url_launcher.dart';
 import '../app/mesh.dart';
 import '../protocol/packet.dart';
 import '../protocol/protocol_engine.dart';
-import '../services/bridge_service.dart';
 import 'design_tokens.dart';
 import 'strings.dart';
 
@@ -44,8 +43,11 @@ IncidentRow _fromDoc(DocumentSnapshot d) {
 }
 
 /// Live global feed straight from Firestore (empty when bridge/Firebase offline).
+/// REACTIVITY LAW: watch [bridgeReadyProvider] (a StateProvider), never `bridgeProvider.ready`
+/// — a plain Provider's mutable field never notifies, so the feed would latch empty forever
+/// if this dashboard opened one frame before Firebase finished booting.
 final cloudIncidentsProvider = StreamProvider<List<IncidentRow>>((ref) {
-  if (!ref.watch(bridgeProvider).ready) return Stream.value(const <IncidentRow>[]);
+  if (!ref.watch(bridgeReadyProvider)) return Stream.value(const <IncidentRow>[]);
   return FirebaseFirestore.instance.collection('sos')
       .orderBy('createdAt', descending: true).snapshots()
       .map((qs) => qs.docs.map(_fromDoc).toList());
@@ -78,8 +80,10 @@ class _NgoShellState extends ConsumerState<NgoShell> with SingleTickerProviderSt
     // but engine's cancel law wins on status; 48h -> expired everywhere.
     final now = DateTime.now().toUtc();
     final merged = <String, IncidentRow>{};
-    for (final p in ctrl.engine.notebook.where((p) => p.type == PacketType.sos)) {
-      merged[p.id] = _fromPacket(p, _status(ctrl, p, now));
+    if (ctrl.engineReady) { // FIRST-FRAME LAW: this can build before start() made the engine
+      for (final p in ctrl.engine.notebook.where((p) => p.type == PacketType.sos)) {
+        merged[p.id] = _fromPacket(p, _status(ctrl, p, now));
+      }
     }
     for (final r in cloud) {
       final local = merged[r.id];
@@ -112,7 +116,7 @@ class _NgoShellState extends ConsumerState<NgoShell> with SingleTickerProviderSt
       body: TabBarView(controller: _tabs, children: [
         _IncidentsTab(incidents: incidents),
         _MapTab(incidents: incidents),
-        _BridgeTab(mesh: m, bridge: ref.watch(bridgeProvider)),
+        _BridgeTab(mesh: m),
       ]),
     );
   }
@@ -141,7 +145,7 @@ class _IncidentsTab extends ConsumerWidget {
               style: const TextStyle(color: AC.dim, fontSize: 12))),
       Expanded(child: ListView.separated(
         padding: const EdgeInsets.all(10), itemCount: incidents.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 6),
+        separatorBuilder: (_, _) => const SizedBox(height: 6),
         itemBuilder: (ctx, i) {
           final r = incidents[i];
           final color = r.status == PacketStatus.active ? AC.sos
@@ -151,7 +155,8 @@ class _IncidentsTab extends ConsumerWidget {
             borderRadius: BorderRadius.circular(AR.r12),
             child: Container(padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(color: AC.surface, borderRadius: BorderRadius.circular(AR.r12),
-                  border: Border.all(color: AC.border)),
+                  // triage at a glance: the card itself is tinted by status
+                  border: Border.all(color: color.withValues(alpha: 0.45))),
               child: Row(children: [
                 Text(catIcon(r.category), style: const TextStyle(fontSize: 30)),
                 const SizedBox(width: 10),
@@ -218,12 +223,15 @@ class _MapTab extends StatelessWidget {
 }
 
 // ---------- TAB 3: BRIDGE ----------
-class _BridgeTab extends StatelessWidget {
-  final MeshState mesh; final BridgeService bridge;
-  const _BridgeTab({required this.mesh, required this.bridge});
+class _BridgeTab extends ConsumerWidget {
+  final MeshState mesh;
+  const _BridgeTab({required this.mesh});
   @override
-  Widget build(BuildContext context) => ListView(padding: const EdgeInsets.all(16), children: [
-    _row('BRIDGE', bridge.ready ? 'READY — uplinks on sight' : bridge.status, bridge.ready ? AC.safe : AC.mute),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final ready = ref.watch(bridgeReadyProvider); // rebuilds the moment Firebase comes up
+    final bridge = ref.read(bridgeProvider);
+    return ListView(padding: const EdgeInsets.all(16), children: [
+    _row('BRIDGE', ready ? 'READY — uplinks on sight' : bridge.status, ready ? AC.safe : AC.mute),
     _row('MESH', mesh.transportUp ? 'ONLINE' : 'OFFLINE', mesh.transportUp ? AC.safe : AC.mute),
     _row('PEERS CONNECTED', '${mesh.peers}', AC.text),
     _row('NOTEBOOK CARRIED', '${mesh.notebookCount} letters', AC.text),
@@ -233,6 +241,7 @@ class _BridgeTab extends StatelessWidget {
         'then teleport to this cloud. Chat never leaves the mesh (privacy partition).',
         style: TextStyle(color: AC.dim, fontSize: 13)),
   ]);
+  }
 
   Widget _row(String k, String v, Color c) => Container(
     margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.all(14),
@@ -247,8 +256,6 @@ class _BridgeTab extends StatelessWidget {
 
 // ---------- INCIDENT SHEET (pin tap / row tap — one law, two doors) ----------
 void showIncidentSheet(BuildContext ctx, IncidentRow r) {
-  final color = r.status == PacketStatus.active ? AC.sos
-      : (r.status == PacketStatus.resolved ? AC.safe : AC.mute);
   showModalBottomSheet(context: ctx, backgroundColor: AC.surface, showDragHandle: true,
     builder: (sctx) => Padding(
       padding: const EdgeInsets.fromLTRB(20, 0, 20, 26),

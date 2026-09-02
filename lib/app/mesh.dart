@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart' as ph; // ServiceStatus clashes with geolocator
 import 'package:shared_preferences/shared_preferences.dart';
 import '../protocol/packet.dart';
 import '../protocol/protocol_engine.dart';
@@ -12,6 +14,9 @@ import '../transport/nearby_connections_transport.dart';
 import '../transport/nearby_transport.dart';
 import '../services/bridge_service.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+
+/// Shipped asset (16-bit PCM WAV — decodes on every Android without a codec gamble).
+const String kSirenAsset = 'audio/siren.wav';
 
 class MeshIdentity {
   final String selfId;
@@ -24,6 +29,11 @@ class MeshIdentity {
 
 final identityProvider = StateNotifierProvider<IdentityStore, MeshIdentity?>((ref) => IdentityStore());
 final bridgeProvider = Provider<BridgeService>((ref) => BridgeService());
+
+/// BridgeService is a mutable singleton, so watching it can never rebuild anything.
+/// This flag is the reactive shadow of `BridgeService.ready` — cloud streams and the
+/// NGO bridge tab watch THIS, otherwise they latch "offline" forever. (REACTIVITY LAW)
+final bridgeReadyProvider = StateProvider<bool>((ref) => false);
 
 
 
@@ -60,17 +70,21 @@ class MeshState {
   final List<String> log;
   final AidPacket? alertPacket; // newest inbound SOS -> siren + banner
   final String? ownActiveSosId;
+  final String? radioWarning;   // Bluetooth/Location OFF => mesh is deaf and blind
   const MeshState({
     this.transportUp = false, this.peers = 0, this.seenCount = 0,
     this.notebookCount = 0, this.log = const [], this.alertPacket, this.ownActiveSosId,
+    this.radioWarning,
   });
   MeshState copyWith({bool? transportUp, int? peers, int? seenCount, int? notebookCount,
-    List<String>? log, AidPacket? alertPacket, String? ownActiveSosId, bool clearAlert = false}) =>
+    List<String>? log, AidPacket? alertPacket, String? ownActiveSosId, String? radioWarning,
+    bool clearAlert = false, bool clearOwnSos = false, bool clearRadioWarning = false}) =>
       MeshState(
         transportUp: transportUp ?? this.transportUp, peers: peers ?? this.peers,
         seenCount: seenCount ?? this.seenCount, notebookCount: notebookCount ?? this.notebookCount,
         log: log ?? this.log, alertPacket: clearAlert ? null : (alertPacket ?? this.alertPacket),
-        ownActiveSosId: ownActiveSosId ?? this.ownActiveSosId,
+        ownActiveSosId: clearOwnSos ? null : (ownActiveSosId ?? this.ownActiveSosId),
+        radioWarning: clearRadioWarning ? null : (radioWarning ?? this.radioWarning),
       );
 }
 
@@ -90,6 +104,9 @@ class MeshController extends StateNotifier<MeshState> {
   MeshController(this.ref) : super(const MeshState());
 
   ProtocolEngine get engine => _engine!;
+  /// UI builds can run BEFORE start()'s microtask creates the engine — every screen
+  /// must check this before touching [engine]. (FIRST-FRAME LAW)
+  bool get engineReady => _engine != null;
   NearbyTransport get transport => ref.read(transportProvider);
 
   void _log(String m) => state = state.copyWith(
@@ -114,12 +131,8 @@ class MeshController extends StateNotifier<MeshState> {
     } catch (_) {}
     _refreshCounts();
     // GHOST FIX: after a process kill the notebook remembers the SOS — so the banner must too
-    for (final p in _engine!.notebook.reversed) {
-      if (p.type == PacketType.sos && p.senderId == id.selfId && !_engine!.isResolved(p.id)) {
-        state = state.copyWith(ownActiveSosId: p.id);
-        break;
-      }
-    }
+    final restored = _engine!.ownActiveSos();
+    if (restored != null) state = state.copyWith(ownActiveSosId: restored.id);
 
     _sub?.cancel();
     _sub = transport.events.listen(_onEvent);
@@ -127,8 +140,41 @@ class MeshController extends StateNotifier<MeshState> {
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) => _heartbeat());
     await transport.start('${id.name}·${id.selfId}'); // name·id => symmetry-breaker inequality
     state = state.copyWith(transportUp: true);
+    await refreshRadioWarning();   // radios OFF is the #1 silent "nothing connects" cause
     await ref.read(bridgeProvider).init();
+    ref.read(bridgeReadyProvider.notifier).state = ref.read(bridgeProvider).ready;
     _log(ref.read(bridgeProvider).status);
+  }
+
+  /// Manual recovery hatch (Settings button): full stop, then a clean start.
+  /// The notebook survives — only radios and native state are recycled.
+  Future<void> restart() async {
+    _log('MANUAL MESH RESTART requested');
+    await stop();
+    await start();
+  }
+
+  /// Nearby Connections needs BOTH Bluetooth and Location switched ON. When either is
+  /// off, discovery silently finds nobody — so we say it out loud instead of failing mute.
+  Future<void> refreshRadioWarning() async {
+    String? w;
+    try {
+      final btOff = (await ph.Permission.bluetooth.serviceStatus) == ph.ServiceStatus.disabled;
+      final locOff = (await ph.Permission.location.serviceStatus) == ph.ServiceStatus.disabled;
+      if (btOff && locOff) {
+        w = 'Bluetooth AND Location are OFF — no phone can be found.';
+      } else if (btOff) {
+        w = 'Bluetooth is OFF — turn it on to reach nearby phones.';
+      } else if (locOff) {
+        w = 'Location is OFF — Android needs it to scan for phones.';
+      }
+    } catch (_) {/* status unknown => never block the SOS path */}
+    state = w == null ? state.copyWith(clearRadioWarning: true) : state.copyWith(radioWarning: w);
+    if (w != null) _log('RADIO WARNING: $w');
+  }
+
+  Future<void> openRadioSettings() async {
+    try { await Geolocator.openLocationSettings(); } catch (_) {}
   }
 
   Future<void> stop() async {
@@ -168,13 +214,13 @@ class MeshController extends StateNotifier<MeshState> {
   void _onPayload(String fromId, String raw) {
     final r = engine.ingest(fromId, raw, DateTime.now().toUtc());
     _log(r.note);
-    if (r.siren && r.packet != null) {
+    // DUPLICATE-ALERT GUARD: engine dedup already blocks re-ingest of the same id; this
+    // stops a stacked takeover/siren for a packet we are ALREADY screaming about.
+    if (r.siren && r.packet != null && state.alertPacket?.id != r.packet!.id) {
       state = state.copyWith(alertPacket: r.packet);
       if (_sirenArmed) unawaited(_playSiren());
-      unawaited(FlutterForegroundTask.updateService(
-        notificationTitle: '🆘 SOS: ${r.packet!.senderName}',
-        notificationText: 'Distress signal received — TAP to open AidBridge',
-      ));
+      unawaited(_notify('🆘 SOS: ${r.packet!.senderName}',
+          'Distress signal received — TAP to open AidBridge'));
     }
     if (r.action == PacketAction.cancel) {
       _log('RESOLVED ${r.targetId} — ${r.packet?.senderName} is safe');
@@ -214,13 +260,11 @@ class MeshController extends StateNotifier<MeshState> {
     // GHOST LAW: one active own-SOS per device. If one exists (even restored
     // after a process kill), re-arm the visible state and refuse a second one —
     // a cancel targets ONE id; a stray second SOS would ghost forever.
-    final selfId = ref.read(identityProvider)?.selfId;
-    for (final p in engine.notebook.reversed) {
-      if (p.type == PacketType.sos && p.senderId == selfId && !engine.isResolved(p.id)) {
-        _log('OWN SOS already ACTIVE — use I\'M SAFE first');
-        state = state.copyWith(ownActiveSosId: p.id);
-        return;
-      }
+    final existing = engine.ownActiveSos();
+    if (existing != null) {
+      _log('OWN SOS already ACTIVE — use I\'M SAFE first');
+      state = state.copyWith(ownActiveSosId: existing.id);
+      return;
     }
     try { // GPS best-effort: null after ~4s, send NEVER blocked (indoor-law)
       final last = await Geolocator.getLastKnownPosition();
@@ -238,18 +282,12 @@ class MeshController extends StateNotifier<MeshState> {
   Future<void> imSafe() async {
     String? id = state.ownActiveSosId;
     if (id == null || _engine!.isResolved(id)) {
-      // process-restart path: ownActiveSosId died in RAM — recover from the persisted notebook
-      final selfId = ref.read(identityProvider)?.selfId;
-      for (final p in engine.notebook.reversed) {
-        if (p.type == PacketType.sos && p.senderId == selfId && !engine.isResolved(p.id)) { id = p.id; break; }
-      }
+      id = engine.ownActiveSos()?.id; // RAM lost it after a process kill — the notebook did not
     }
     if (id == null) { _log('Nothing active to resolve'); return; }
     final r = engine.sendCancel(id);
     _log('I AM SAFE -> resolve ${r.targetId}');
-    state = MeshState(transportUp: state.transportUp, peers: state.peers,
-        seenCount: state.seenCount, notebookCount: state.notebookCount,
-        log: state.log, alertPacket: state.alertPacket); // ownActiveSosId purged
+    state = state.copyWith(clearOwnSos: true); // only ownActiveSosId is purged
     _refreshCounts(); _persist(); _flushAll();
     final me = ref.read(identityProvider)?.name ?? 'unknown';
     unawaited(ref.read(bridgeProvider).onPacket(r.packet!, me).then(_log));
@@ -260,27 +298,49 @@ class MeshController extends StateNotifier<MeshState> {
     if (r != null) { _log(r.note); _flushAll(); _persist(); }
   }
 
-  // ---------- Siren (temporary debug rig; alert service arrives Batch-4) ----------
+  // ---------- Siren + haptics (a muted or pocketed phone must STILL wake its owner) ----------
   Future<void> _playSiren() async {
+    _buzzAlarm();
     try {
       await _siren.setReleaseMode(ReleaseMode.loop);
-      await _siren.play(AssetSource('audio/siren.mp3'));
-    } catch (_) {}
+      await _siren.setVolume(1.0);
+      await _siren.play(AssetSource(kSirenAsset));
+    } catch (e) {
+      _log('SIREN failed ($e) — vibration only');
+    }
   }
+
+  /// Spaced heavy impacts ≈ alarm pattern, no extra dependency, works on silent mode.
+  void _buzzAlarm() {
+    for (var i = 0; i < 6; i++) {
+      Future.delayed(Duration(milliseconds: 400 * i), () => HapticFeedback.heavyImpact());
+    }
+  }
+
   Future<void> sirenTest() async {
+    _buzzAlarm();
     try {
       await _siren.setReleaseMode(ReleaseMode.stop);
-      await _siren.play(AssetSource('audio/siren.mp3'));
+      await _siren.setVolume(1.0);
+      await _siren.play(AssetSource(kSirenAsset));
       Future.delayed(const Duration(seconds: 2), () => _siren.stop());
-    } catch (_) {}
+    } catch (e) {
+      _log('SIREN TEST failed ($e) — vibration only');
+    }
   }
+
   Future<void> stopSiren() async {
     try { await _siren.stop(); } catch (_) {}
     state = state.copyWith(clearAlert: true);
-    unawaited(FlutterForegroundTask.updateService(
-      notificationTitle: 'AidBridge mesh active',
-      notificationText: 'Relaying SOS packets. Keep this app alive.',
-    ));
+    unawaited(_notify('AidBridge mesh active', 'Relaying SOS packets. Keep this app alive.'));
+  }
+
+  /// The service can be dead (OEM killer, swipe) — an unguarded updateService would
+  /// throw into the void and take the isolate's error handler with it.
+  Future<void> _notify(String title, String text) async {
+    try {
+      await FlutterForegroundTask.updateService(notificationTitle: title, notificationText: text);
+    } catch (_) {}
   }
 
   void _refreshCounts() {
