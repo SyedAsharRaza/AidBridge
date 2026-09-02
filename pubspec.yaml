@@ -32,6 +32,7 @@ dev_dependencies:
     sdk: flutter
   flutter_launcher_icons: "^0.14.4"
   flutter_native_splash: ^2.4.1
+  flutter_lints: ^6.0.0
 
 flutter_launcher_icons:
   android: true
@@ -41,7 +42,6 @@ flutter_launcher_icons:
   # Adaptive settings to auto-scale inside Android safe zones
   adaptive_icon_background: "#FAF6EE"
   adaptive_icon_foreground: "assets/icon/applogo.png"
-  flutter_lints: ^6.0.0
 
 flutter_native_splash:
   color: "#0F1115"
