@@ -125,6 +125,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             style: const TextStyle(color: AC.text, fontWeight: FontWeight.w800)),
       ),
       const SizedBox(height: 12),
+      // REHEARSAL RESET: wipes local state between demo runs so every run starts clean.
+      OutlinedButton.icon(
+        style: OutlinedButton.styleFrom(side: const BorderSide(color: AC.border), minimumSize: const Size.fromHeight(kMinTarget)),
+        onPressed: () => _confirmClear(s),
+        icon: const Icon(Icons.delete_sweep, color: AC.mute),
+        label: Text(s.clearNotebook, style: const TextStyle(color: AC.text)),
+      ),
+      const SizedBox(height: 12),
       // Live mesh chatter: makes an invisible radio protocol visible (demo + debugging).
       Container(
         padding: const EdgeInsets.all(12),
@@ -141,5 +149,27 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ]),
       ),
     ]);
+  }
+
+  /// Destructive and irreversible — never one stray tap away.
+  Future<void> _confirmClear(S s) async {
+    final messenger = ScaffoldMessenger.of(context); // captured BEFORE the await gap
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AC.surface,
+        title: Text(s.clearNotebook, style: const TextStyle(color: AC.text)),
+        content: Text(s.clearNotebookQ, style: const TextStyle(color: AC.dim)),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false),
+              child: Text(s.cancel, style: const TextStyle(color: AC.dim))),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(true),
+              child: Text(s.erase, style: const TextStyle(color: AC.sos, fontWeight: FontWeight.w900))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await ref.read(meshProvider.notifier).clearNotebook();
+    messenger.showSnackBar(SnackBar(content: Text(s.notebookCleared)));
   }
 }

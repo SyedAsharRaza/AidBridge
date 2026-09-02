@@ -34,7 +34,8 @@ class _SosScreenState extends ConsumerState<SosScreen> {
       builder: (ctx) => Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
         child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          TextField(controller: note, decoration: InputDecoration(labelText: s.noteOpt)),
+          TextField(controller: note, maxLength: kMaxTextLen, maxLines: 2,
+              decoration: InputDecoration(labelText: s.noteOpt)),
           const SizedBox(height: 12),
           _catTile(ctx, s, SosCategory.medical, note), _catTile(ctx, s, SosCategory.waterFood, note),
           _catTile(ctx, s, SosCategory.rescue, note), _catTile(ctx, s, SosCategory.custom, note),

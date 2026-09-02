@@ -88,7 +88,7 @@ class ProtocolEngine {
       {SosCategory? category, String text = '', double? lat, double? lng, String? targetId}) {
     return AidPacket(
       id: _newId(), type: type, senderId: selfId, senderName: selfName,
-      phone: selfPhone, category: category, text: text, lat: lat, lng: lng,
+      phone: selfPhone, category: category, text: clampText(text), lat: lat, lng: lng,
       createdAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
       targetId: targetId, ttl: kMaxTtl, hops: 0,
     );
@@ -189,6 +189,16 @@ class ProtocolEngine {
   }
 
   // ---------- PERSISTENCE (identity + notebook survive restarts) ----------
+  /// FULL LOCAL AMNESIA — the rehearsal reset. Wipes carried letters, dedup memory,
+  /// delivery books and heartbeat fuel on THIS device only; peers keep their copies.
+  void clearNotebook() {
+    _notebook.clear();
+    _seen.clear();
+    _deliveredTo.clear();
+    _myActiveSos.clear();
+    _lastBeat = DateTime.fromMillisecondsSinceEpoch(0);
+  }
+
   String snapshot() => jsonEncode({
     'seen': _seen.toList(),
     'notebook': _notebook.map((p) => p.toJson()).toList(),

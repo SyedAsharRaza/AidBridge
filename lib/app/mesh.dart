@@ -18,6 +18,10 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 /// Shipped asset (16-bit PCM WAV — decodes on every Android without a codec gamble).
 const String kSirenAsset = 'audio/siren.wav';
 
+/// Rate limit on originating SOS letters. A demo audience WILL mash the button, and
+/// every press that got through would burn a notebook slot and a cloud write.
+const Duration kSosCooldown = Duration(seconds: 10);
+
 class MeshIdentity {
   final String selfId;
   final String name;
@@ -100,6 +104,8 @@ class MeshController extends StateNotifier<MeshState> {
   Timer? _heartbeatTimer;
   final AudioPlayer _siren = AudioPlayer();
   final bool _sirenArmed = true;
+  bool _firing = false;        // re-entrancy gate: fireSos awaits GPS, so it can overlap itself
+  DateTime? _lastSosAt;        // origin timestamp for the cooldown
 
   MeshController(this.ref) : super(const MeshState());
 
@@ -256,27 +262,51 @@ class MeshController extends StateNotifier<MeshState> {
 
   // ---------- OUTBOUND API (debug cockpit now, real UI in Batch-4) ----------
   Future<void> fireSos({required SosCategory category, String text = ''}) async {
-    double? lat, lng;
+    // RE-ENTRANCY GATE (must come first): this method awaits GPS for up to 4s, so two
+    // fast taps could BOTH pass the ghost-law check below and originate two SOSes.
+    // A cancel targets ONE id, so the second would ghost forever. One at a time.
+    if (_firing) { _log('SOS already being sent — repeat press ignored'); return; }
+
+    final since = _lastSosAt == null ? null : DateTime.now().difference(_lastSosAt!);
+    if (since != null && since < kSosCooldown) {
+      _log('SOS COOLDOWN — ${(kSosCooldown - since).inSeconds + 1}s left');
+      return;
+    }
+
     // GHOST LAW: one active own-SOS per device. If one exists (even restored
-    // after a process kill), re-arm the visible state and refuse a second one —
-    // a cancel targets ONE id; a stray second SOS would ghost forever.
+    // after a process kill), re-arm the visible state and refuse a second one.
     final existing = engine.ownActiveSos();
     if (existing != null) {
       _log('OWN SOS already ACTIVE — use I\'M SAFE first');
       state = state.copyWith(ownActiveSosId: existing.id);
       return;
     }
-    try { // GPS best-effort: null after ~4s, send NEVER blocked (indoor-law)
-      final last = await Geolocator.getLastKnownPosition();
-      final pos = last ?? await Geolocator.getCurrentPosition(
-          locationSettings: AndroidSettings(accuracy: LocationAccuracy.medium, timeLimit: const Duration(seconds: 4)));
-      lat = pos.latitude; lng = pos.longitude;
-    } catch (_) {}
-    final r = engine.sendSos(category: category, text: text, lat: lat, lng: lng);
-    _log(r.note); state = state.copyWith(ownActiveSosId: r.packet?.id);
-    _refreshCounts(); _persist(); _flushAll();
-    final me = ref.read(identityProvider)?.name ?? 'unknown';
-    unawaited(ref.read(bridgeProvider).onPacket(r.packet!, me).then(_log));
+
+    _firing = true;
+    try {
+      double? lat, lng;
+      try { // GPS best-effort: null after ~4s, send NEVER blocked (indoor-law)
+        final last = await Geolocator.getLastKnownPosition();
+        final pos = last ?? await Geolocator.getCurrentPosition(
+            locationSettings: AndroidSettings(accuracy: LocationAccuracy.medium, timeLimit: const Duration(seconds: 4)));
+        lat = pos.latitude; lng = pos.longitude;
+      } catch (_) {}
+      // Re-check AFTER the await: an inbound cancel or a restore could have landed.
+      final raced = engine.ownActiveSos();
+      if (raced != null) {
+        _log('OWN SOS appeared while locating — not sending a second one');
+        state = state.copyWith(ownActiveSosId: raced.id);
+        return;
+      }
+      final r = engine.sendSos(category: category, text: text, lat: lat, lng: lng);
+      _lastSosAt = DateTime.now();
+      _log(r.note); state = state.copyWith(ownActiveSosId: r.packet?.id);
+      _refreshCounts(); _persist(); _flushAll();
+      final me = ref.read(identityProvider)?.name ?? 'unknown';
+      unawaited(ref.read(bridgeProvider).onPacket(r.packet!, me).then(_log));
+    } finally {
+      _firing = false; // never leave the button dead, even if GPS or the bridge threw
+    }
   }
 
   Future<void> imSafe() async {
@@ -291,6 +321,20 @@ class MeshController extends StateNotifier<MeshState> {
     _refreshCounts(); _persist(); _flushAll();
     final me = ref.read(identityProvider)?.name ?? 'unknown';
     unawaited(ref.read(bridgeProvider).onPacket(r.packet!, me).then(_log));
+  }
+
+  /// REHEARSAL RESET (Settings): local amnesia between demo runs. Wipes this phone's
+  /// notebook, dedup memory and delivery books, silences any alert, and rewrites the
+  /// snapshot on disk so a relaunch does not resurrect it. Peers keep their own copies.
+  Future<void> clearNotebook() async {
+    if (_engine == null) return;
+    _engine!.clearNotebook();
+    await stopSiren();                              // kills the siren AND clears alertPacket
+    state = state.copyWith(clearOwnSos: true);      // the SOS banner has nothing to point at
+    _lastSosAt = null;                              // a fresh run must not inherit the cooldown
+    _refreshCounts();
+    await _persist();
+    _log('NOTEBOOK CLEARED (this phone only — peers still carry their copies)');
   }
 
   Future<void> _heartbeat() async {

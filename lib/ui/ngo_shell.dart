@@ -240,6 +240,31 @@ class _BridgeTab extends ConsumerWidget {
     const Text('Any phone with internet becomes a bridge: SOS letters ride the mesh to it, '
         'then teleport to this cloud. Chat never leaves the mesh (privacy partition).',
         style: TextStyle(color: AC.dim, fontSize: 13)),
+    const SizedBox(height: 14),
+    // LIVE MESH CHATTER: the protocol is invisible radio traffic — printing it turns
+    // "trust us, it relays" into something a judge can watch happen in real time.
+    Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: AC.surface, borderRadius: BorderRadius.circular(AR.r12),
+          border: Border.all(color: AC.border)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.terminal, color: AC.dim, size: 14),
+          const SizedBox(width: 6),
+          const Expanded(child: Text('LIVE MESH LOG',
+              style: TextStyle(color: AC.dim, fontWeight: FontWeight.w700, fontSize: 12))),
+          Text('${mesh.log.length}', style: const TextStyle(color: AC.mute, fontSize: 11)),
+        ]),
+        const SizedBox(height: 8),
+        if (mesh.log.isEmpty)
+          const Text('waiting for radio traffic…', style: TextStyle(color: AC.mute, fontSize: 11))
+        else
+          for (final line in mesh.log.take(18))
+            Padding(padding: const EdgeInsets.only(bottom: 2),
+                child: Text(line, style: const TextStyle(color: AC.mute, fontSize: 11),
+                    maxLines: 2, overflow: TextOverflow.ellipsis)),
+      ]),
+    ),
   ]);
   }
 

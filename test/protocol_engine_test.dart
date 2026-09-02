@@ -240,6 +240,66 @@ void main() {
     });
   });
 
+  group('text cap (anti-amplification)', () {
+    test('an oversized inbound note is truncated on decode', () {
+      final fat = AidPacket(
+        id: 'p1', type: PacketType.sos, senderId: 'them', senderName: 'Loud',
+        text: 'A' * 5000, createdAt: 1700000000, ttl: 4, hops: 0,
+      );
+      // toWire carries whatever it was built with; the DECODER is the gate.
+      final back = AidPacket.fromWire(fat.toWire())!;
+      expect(back.text.length, kMaxTextLen);
+    });
+
+    test('my own note is capped at origin, so we never emit an oversized letter', () {
+      final e = _engine();
+      final p = e.sendSos(category: SosCategory.custom, text: 'B' * 5000).packet!;
+      expect(p.text.length, kMaxTextLen);
+      expect(e.sendChat('C' * 5000).packet!.text.length, kMaxTextLen);
+    });
+
+    test('truncation never orphans half of an emoji', () {
+      // Pad so the cut lands exactly between the two halves of a surrogate pair.
+      final text = '${'x' * (kMaxTextLen - 1)}\u{1F691}rest';
+      final cut = clampText(text);
+      expect(cut.length, kMaxTextLen - 1);      // stepped back rather than splitting
+      expect(cut.codeUnits.last, isNot(inInclusiveRange(0xD800, 0xDBFF)));
+      expect(() => jsonDecode(jsonEncode({'t': cut})), returnsNormally);
+    });
+
+    test('short text is passed through untouched', () {
+      expect(clampText('trapped under concrete'), 'trapped under concrete');
+    });
+  });
+
+  group('rehearsal reset', () {
+    test('clearNotebook wipes carried letters, dedup memory and heartbeat fuel', () {
+      final e = _engine();
+      final mine = e.sendSos(category: SosCategory.rescue).packet!;
+      e.ingest('e1', _wireFrom(id: 'p9', senderId: 'them'), now);
+      expect(e.notebook.length, 2);
+
+      e.clearNotebook();
+
+      expect(e.notebook, isEmpty);
+      expect(e.seenCount, 0);
+      expect(e.ownActiveSos(), isNull);
+      expect(e.outboundFor('peer'), isEmpty);   // delivery books gone too
+      expect(e.heartbeatTick(now), isNull);     // no fuel left to re-broadcast
+      expect(e.isResolved(mine.id), isFalse);
+    });
+
+    test('after a reset the same letter is accepted again (dedup memory really went)', () {
+      final e = _engine();
+      final wire = _wireFrom(id: 'p1', senderId: 'them');
+      expect(e.ingest('e1', wire, now).action, PacketAction.newSos);
+      expect(e.ingest('e1', wire, now).action, PacketAction.duplicate);
+
+      e.clearNotebook();
+      expect(e.ingest('e1', wire, now).action, PacketAction.newSos);
+    });
+  });
+
   group('persistence', () {
     test('notebook, dedup memory and heartbeat fuel survive a process kill', () {
       final a = _engine();

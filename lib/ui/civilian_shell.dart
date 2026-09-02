@@ -73,13 +73,21 @@ class _CivilianShellState extends ConsumerState<CivilianShell> with SingleTicker
             const SizedBox(height: 28),
             FilledButton(
               style: FilledButton.styleFrom(backgroundColor: AC.primary),
-              onPressed: () { Navigator.of(ctx).pop(); ref.read(meshProvider.notifier).stopSiren(); },
+              onPressed: () => Navigator.of(ctx).pop(), // silencing happens on the ONE exit path below
               child: Text(s.stopSiren),
             ),
           ]),
         ),
       ),
-    ).then((_) { _alertOpen = false; _shownAlertId = null; });
+    ).then((_) {
+      _alertOpen = false;
+      // ONE EXIT PATH: the button AND the system back gesture both land here, so a
+      // back-swipe can never leave the siren screaming with no way to silence it.
+      // stopSiren() also clears alertPacket, which is what stops the takeover from
+      // re-opening on the next rebuild. (_shownAlertId is deliberately NOT reset:
+      // one takeover per packet id, forever.)
+      ref.read(meshProvider.notifier).stopSiren();
+    });
   }
 }
 

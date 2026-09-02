@@ -5,6 +5,21 @@ import 'dart:convert';
 /// ttl-1 / hops+1 via [forRelay]. Nothing else. Ever. (LAW)
 const int kProtocolVersion = 1;
 
+/// Hard cap on any free-text field. Enforced on BOTH ends: outbound so we never emit
+/// an oversized letter, inbound so a hostile peer cannot use us as an amplifier by
+/// pushing a megabyte of text through a 4-hop flood.
+const int kMaxTextLen = 500;
+
+/// Truncate without ever splitting a surrogate pair — half an emoji is a lone
+/// surrogate, which breaks JSON round-trips on some decoders.
+String clampText(String t) {
+  if (t.length <= kMaxTextLen) return t;
+  var end = kMaxTextLen;
+  final c = t.codeUnitAt(end - 1);
+  if (c >= 0xD800 && c <= 0xDBFF) end -= 1; // high surrogate would be orphaned
+  return t.substring(0, end);
+}
+
 enum PacketType { sos, cancel, chat }
 enum SosCategory { medical, waterFood, rescue, custom }
 
@@ -82,7 +97,7 @@ class AidPacket {
         id: id, version: num.tryParse('${m['v']}')?.toInt() ?? kProtocolVersion,
         type: t, senderId: senderId,
         senderName: '${m['senderName'] ?? 'Unknown'}',
-        phone: m['phone'] as String?, text: '${m['text'] ?? ''}',
+        phone: m['phone'] as String?, text: clampText('${m['text'] ?? ''}'),
         lat: m['lat'] == null ? null : num.tryParse('${m['lat']}')?.toDouble(),
         lng: m['lng'] == null ? null : num.tryParse('${m['lng']}')?.toDouble(),
         createdAt: createdAt.toInt(),

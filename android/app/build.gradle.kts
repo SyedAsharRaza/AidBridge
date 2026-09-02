@@ -25,7 +25,10 @@ android {
         applicationId = "com.aidbridge.aidbridge"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // PINNED, not inherited: nearby_connections needs 21+, firebase_core needs 23+,
+        // and 24 is Flutter's own current floor. Pinning stops a future Flutter upgrade
+        // from silently moving the minimum out from under a tested device matrix.
+        minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

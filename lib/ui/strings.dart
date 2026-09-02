@@ -66,6 +66,12 @@ class S {
   String get restartingMesh => _p('Restarting mesh…', 'میش دوبارہ شروع ہو رہا ہے…');
   String get fixIt => _p('FIX', 'ٹھیک کریں');
   String get radiosOffTitle => _p('RADIOS OFF', 'ریڈیو بند ہیں');
+  String get clearNotebook => _p('CLEAR NOTEBOOK', 'نوٹ بک خالی کریں');
+  String get clearNotebookQ => _p('Erase every carried letter on THIS phone? Nearby phones keep their own copies.',
+      'اس فون پر محفوظ تمام پیغامات مٹا دییں؟ قریبی فون اپنی نقل رکھیں گے۔');
+  String get cancel => _p('CANCEL', 'منسوخ');
+  String get erase => _p('ERASE', 'مٹا دیں');
+  String get notebookCleared => _p('Notebook cleared', 'نوٹ بک خالی کر دی گئی');
 }
 
 String timeAgo(int epochSec, {bool ur = false}) {
