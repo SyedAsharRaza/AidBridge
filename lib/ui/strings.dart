@@ -151,6 +151,14 @@ class S {
   String notebookLetters(int n) => _p('$n letters', '$n خطوط');
   String locatedIncidents(int n) => _p('📍 $n located incidents  •  ${osmNeedsInternet}',
       '📍 $n مقام والے واقعات  •  $osmNeedsInternet');
+  String get appTitle => _p('AIDBRIDGE', 'ایڈبرج');
+  String get peersLabel => _p('PEERS', 'جڑے ہوئے فونز');
+  String get seenLabel => _p('SEEN', 'دیکھے گئے');
+  String get notebookLabel => _p('NOTEBOOK', 'نوٹ بک');
+  String meshStatusLine(bool online, int peers, int seen, int notebook) {
+    final state = online ? onlineLabel : offlineLabel;
+    return '⚡ $state   •   ${peersLabel} $peers   •   ${seenLabel} $seen   •   ${notebookLabel} $notebook';
+  }
 }
 
 String timeAgo(int epochSec, {bool ur = false}) {

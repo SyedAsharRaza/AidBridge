@@ -51,7 +51,7 @@ class _CivilianShellState extends ConsumerState<CivilianShell> with SingleTicker
     }
     return Scaffold(
       appBar: AppBar(
-        title: const Text('AIDBRIDGE'),
+        title: Text(s.appTitle),
         bottom: TabBar(controller: _tabs, tabs: [
           Tab(text: s.tabSos, icon: const Icon(Icons.campaign)),
           Tab(text: s.tabAlerts, icon: const Icon(Icons.notifications_active)),

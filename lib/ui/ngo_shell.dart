@@ -102,15 +102,8 @@ class _NgoShellState extends ConsumerState<NgoShell> with SingleTickerProviderSt
     final incidents = merged.values.toList()..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
     return Scaffold(
-      appBar: AppBar(
+        appBar: AppBar(
         title: Text(s.ngoCommandTitle),
-        actions: [TextButton(
-            onPressed: () async {
-              await ref.read(identityProvider.notifier).setRole('civilian');
-              if (context.mounted) context.go('/civilian');
-            },
-            child: Text(s.civilianViewBtn, style: const TextStyle(color: AC.primary))),
-        ],
         bottom: TabBar(controller: _tabs, tabs: [
           Tab(text: s.tabIncidents, icon: const Icon(Icons.crisis_alert)),
           Tab(text: s.tabMap, icon: const Icon(Icons.map)),
@@ -124,7 +117,7 @@ class _NgoShellState extends ConsumerState<NgoShell> with SingleTickerProviderSt
           _IncidentsTab(incidents: incidents, cloudError: cloudAsync.hasError),
           _MapTab(incidents: incidents),
           _BridgeTab(mesh: m),
-          const SettingsScreen(),
+          const SettingsScreen(showIdentityFields: false),
         ])),
       ]),
     );
@@ -248,31 +241,8 @@ class _BridgeTab extends ConsumerWidget {
     _row(s.peersConnected, '${mesh.peers}', AC.text),
     _row(s.notebookCarriedLabel, s.notebookLetters(mesh.notebookCount), AC.text),
     _row(s.dedupMemoryLabel, '${mesh.seenCount}', AC.text),
-    const SizedBox(height: 10),
+        const SizedBox(height: 10),
     Text(s.bridgeExplain, style: const TextStyle(color: AC.dim, fontSize: 13)),
-    const SizedBox(height: 14),
-    Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(color: AC.surface, borderRadius: BorderRadius.circular(AR.r12),
-          border: Border.all(color: AC.border)),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          const Icon(Icons.terminal, color: AC.dim, size: 14),
-          const SizedBox(width: 6),
-          Expanded(child: Text(s.liveMeshLog,
-              style: const TextStyle(color: AC.dim, fontWeight: FontWeight.w700, fontSize: 12))),
-          Text('${mesh.log.length}', style: const TextStyle(color: AC.mute, fontSize: 11)),
-        ]),
-        const SizedBox(height: 8),
-        if (mesh.log.isEmpty)
-          Text(s.waitingRadioTraffic, style: const TextStyle(color: AC.mute, fontSize: 11))
-        else
-          for (final line in mesh.log.take(18))
-            Padding(padding: const EdgeInsets.only(bottom: 2),
-                child: Text(line, style: const TextStyle(color: AC.mute, fontSize: 11),
-                    maxLines: 2, overflow: TextOverflow.ellipsis)),
-      ]),
-    ),
   ]);
   }
 

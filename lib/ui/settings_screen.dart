@@ -6,7 +6,8 @@ import 'design_tokens.dart';
 import 'strings.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
-  const SettingsScreen({super.key});
+  final bool showIdentityFields;
+  const SettingsScreen({super.key, this.showIdentityFields = true});
   @override
   ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
@@ -35,34 +36,34 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final m = ref.watch(meshProvider);
     final id = ref.watch(identityProvider);
     return ListView(padding: const EdgeInsets.all(16), children: [
-      TextField(controller: _name, maxLength: 20, decoration: InputDecoration(labelText: s.callSign)),
-      const SizedBox(height: 8),
-      TextField(controller: _phone, keyboardType: TextInputType.phone, decoration: InputDecoration(labelText: s.phoneOpt)),
-      const SizedBox(height: 8),
-      FilledButton(onPressed: () async {
-        final messenger = ScaffoldMessenger.of(context); // capture BEFORE the await gap
-        // Onboarding demands a call sign; Settings must not quietly allow erasing it, or this
-        // phone starts advertising as an empty name and every alert card it sends reads blank.
-        if (_name.text.trim().isEmpty) {
-          messenger.showSnackBar(SnackBar(content: Text(s.nameRequired)));
-          return;
-        }
-        try {
-          await ref.read(identityProvider.notifier).setName(_name.text.trim());
-          await ref.read(identityProvider.notifier).setPhone(_phone.text.trim());
-          messenger.showSnackBar(SnackBar(content: Text('${s.save} ✓')));
-        } catch (_) {
-          messenger.showSnackBar(SnackBar(content: Text(s.saveFailed)));
-        }
-      }, child: Text(s.save)),
-      const SizedBox(height: 18),
+      if (widget.showIdentityFields) ...[
+        TextField(controller: _name, maxLength: 20, decoration: InputDecoration(labelText: s.callSign)),
+        const SizedBox(height: 8),
+        TextField(controller: _phone, keyboardType: TextInputType.phone, decoration: InputDecoration(labelText: s.phoneOpt)),
+        const SizedBox(height: 8),
+        FilledButton(onPressed: () async {
+          final messenger = ScaffoldMessenger.of(context);
+          if (_name.text.trim().isEmpty) {
+            messenger.showSnackBar(SnackBar(content: Text(s.nameRequired)));
+            return;
+          }
+          try {
+            await ref.read(identityProvider.notifier).setName(_name.text.trim());
+            await ref.read(identityProvider.notifier).setPhone(_phone.text.trim());
+            messenger.showSnackBar(SnackBar(content: Text('${s.save} ✓')));
+          } catch (_) {
+            messenger.showSnackBar(SnackBar(content: Text(s.saveFailed)));
+          }
+        }, child: Text(s.save)),
+        const SizedBox(height: 18),
+      ],
       Container(
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(color: AC.surface, borderRadius: BorderRadius.circular(AR.r12), border: Border.all(color: AC.border)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(s.meshStatus, style: const TextStyle(color: AC.dim, fontWeight: FontWeight.w700)),
           const SizedBox(height: 8),
-          Text('⚡ ${m.transportUp ? "ONLINE" : "OFFLINE"}   •   PEERS ${m.peers}   •   SEEN ${m.seenCount}   •   NOTEBOOK ${m.notebookCount}',
+          Text(s.meshStatusLine(m.transportUp, m.peers, m.seenCount, m.notebookCount),
               style: const TextStyle(color: AC.text)),
           const SizedBox(height: 4),
           Text('radio ID: ${id?.selfId ?? "—"}', style: const TextStyle(color: AC.mute, fontSize: 12)),
@@ -156,22 +157,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         onPressed: () => _confirmClear(s),
         icon: const Icon(Icons.delete_sweep, color: AC.mute),
         label: Text(s.clearNotebook, style: const TextStyle(color: AC.text)),
-      ),
-      const SizedBox(height: 12),
-      // Live mesh chatter: makes an invisible radio protocol visible (demo + debugging).
-      Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(color: AC.surface, borderRadius: BorderRadius.circular(AR.r12), border: Border.all(color: AC.border)),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('MESH LOG', style: TextStyle(color: AC.dim, fontWeight: FontWeight.w700, fontSize: 12)),
-          const SizedBox(height: 6),
-          if (m.log.isEmpty)
-            const Text('—', style: TextStyle(color: AC.mute, fontSize: 11))
-          else
-            for (final line in m.log.take(12))
-              Padding(padding: const EdgeInsets.only(bottom: 2),
-                  child: Text(line, style: const TextStyle(color: AC.mute, fontSize: 11), maxLines: 2, overflow: TextOverflow.ellipsis)),
-        ]),
       ),
     ]);
   }
