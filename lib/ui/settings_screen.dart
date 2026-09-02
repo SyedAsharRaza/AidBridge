@@ -99,6 +99,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           onChanged: (v) { if (v != null) ref.read(localeProvider.notifier).set(v); },
         )),
       ]),
+      const SizedBox(height: 12),
+      OutlinedButton.icon(
+        style: OutlinedButton.styleFrom(side: const BorderSide(color: AC.border), minimumSize: const Size.fromHeight(kMinTarget)),
+        onPressed: () => GoRouter.of(context).go('/how-it-works/${id?.role ?? 'civilian'}'),
+        icon: const Icon(Icons.help_outline, color: AC.primary),
+        label: Text(s.howItWorksLink, style: const TextStyle(color: AC.text)),
+      ),
+      const SizedBox(height: 12),
       if (m.radioWarning != null) ...[
         const SizedBox(height: 12),
         Container(

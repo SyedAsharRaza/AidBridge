@@ -33,7 +33,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           padding: const EdgeInsets.all(20),
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             const SizedBox(height: 28),
-            const Icon(Icons.radar, color: AC.primary, size: 64),
+            Image.asset('assets/icon/aidbridge_splash_logo.png', width: 64, height: 64),
             const SizedBox(height: 10),
             const Center(child: Text('AIDBRIDGE', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w900, letterSpacing: 4, color: AC.text))),
             Center(child: Text(s.appTagline, style: const TextStyle(color: AC.dim), textAlign: TextAlign.center)),

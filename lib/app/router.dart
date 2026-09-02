@@ -3,19 +3,17 @@ import 'package:go_router/go_router.dart';
 import '../ui/civilian_shell.dart';
 import '../ui/onboarding.dart';
 import '../ui/ngo_shell.dart';
-import 'mesh.dart' show identityProvider;
+import '../ui/splash_screen.dart';
+import '../ui/how_it_works_screen.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
-  final id = ref.read(identityProvider);
-  // ROLE-ROUTING LAW: an onboarded NGO phone must wake up in the command center,
-  // not in the civilian shell (identity is already loaded before runApp).
-  final home = !(id?.onboarded ?? false)
-      ? '/onboarding'
-      : (id!.role == 'ngo' ? '/ngo' : '/civilian');
   return GoRouter(
-    initialLocation: home,
+    initialLocation: '/splash',
     routes: [
+      GoRoute(path: '/splash', builder: (_, _) => const SplashScreen()),
       GoRoute(path: '/onboarding', builder: (_, _) => const OnboardingScreen()),
+      GoRoute(path: '/how-it-works/:role', builder: (_, state) =>
+          HowItWorksScreen(role: state.pathParameters['role'] ?? 'civilian')),
       GoRoute(path: '/civilian', builder: (_, _) => const CivilianShell()),
       GoRoute(path: '/ngo', builder: (_, _) => const NgoShell()),
     ],

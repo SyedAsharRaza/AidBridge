@@ -9,11 +9,11 @@ import 'package:latlong2/latlong.dart';
 import '../app/mesh.dart';
 import '../protocol/packet.dart';
 import '../protocol/protocol_engine.dart';
-import 'civilian_shell.dart' show dialPhone; // one hardened CALL path for both shells
+import 'civilian_shell.dart' show dialPhone;
 import 'design_tokens.dart';
+import 'settings_screen.dart';
 import 'strings.dart';
 
-/// One incident row: local notebook OR cloud, merged by packet id.
 class IncidentRow {
   final String id; final String name; final String? phone;
   final String category; final String text;
@@ -42,25 +42,16 @@ IncidentRow _fromDoc(DocumentSnapshot d) {
       hops: num.tryParse('${m['hops']}')?.toInt() ?? 0, status: st, fromCloud: true);
 }
 
-/// Newest first and BOUNDED: the dashboard mirrors the notebook's own 200-letter horizon, so
-/// a collection that grows all season can neither blow up memory nor bill unbounded reads.
 const int kCloudFeedLimit = 200;
 
-/// Live global feed straight from Firestore (empty when bridge/Firebase offline).
-/// REACTIVITY LAW: watch [bridgeReadyProvider] (a StateProvider), never `bridgeProvider.ready`
-/// — a plain Provider's mutable field never notifies, so the feed would latch empty forever
-/// if this dashboard opened one frame before Firebase finished booting.
 final cloudIncidentsProvider = StreamProvider<List<IncidentRow>>((ref) {
   if (!ref.watch(bridgeReadyProvider)) return Stream.value(const <IncidentRow>[]);
   return FirebaseFirestore.instance.collection('sos')
       .orderBy('createdAt', descending: true).limit(kCloudFeedLimit).snapshots()
       .map((qs) {
-        // ONE MALFORMED DOC MUST NOT END THE STREAM. A throw in here closes the subscription
-        // for good, and the dashboard reads `.value ?? []` — so the entire cloud feed would
-        // go quietly empty and never come back, with nothing on screen admitting it.
         final out = <IncidentRow>[];
         for (final d in qs.docs) {
-          try { out.add(_fromDoc(d)); } catch (_) {/* drop the bad row, keep the feed alive */}
+          try { out.add(_fromDoc(d)); } catch (_) {}
         }
         return out;
       });
@@ -73,30 +64,27 @@ class NgoShell extends ConsumerStatefulWidget {
 }
 
 class _NgoShellState extends ConsumerState<NgoShell> with SingleTickerProviderStateMixin {
-  late final TabController _tabs = TabController(length: 3, vsync: this);
+  late final TabController _tabs = TabController(length: 4, vsync: this);
 
   @override
   void initState() {
     super.initState();
-    Future.microtask(() async { // NGO phone also runs the mesh (offline truth + bridge duties)
+    Future.microtask(() async {
       if (!ref.read(meshProvider).transportUp) await ref.read(meshProvider.notifier).start();
     });
   }
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
     final m = ref.watch(meshProvider);
     final ctrl = ref.read(meshProvider.notifier);
-    // A denied read (Firestore rules) or a dropped stream must be VISIBLE, not silently empty:
-    // an operator who thinks the cloud is quiet will not go looking for the switch that broke.
     final cloudAsync = ref.watch(cloudIncidentsProvider);
     final cloud = cloudAsync.value ?? const <IncidentRow>[];
 
-    // MERGE by id: local notebook (offline truth) + cloud (global truth). Prefer cloud fields,
-    // but engine's cancel law wins on status; 48h -> expired everywhere.
     final now = DateTime.now().toUtc();
     final merged = <String, IncidentRow>{};
-    if (ctrl.engineReady) { // FIRST-FRAME LAW: this can build before start() made the engine
+    if (ctrl.engineReady) {
       for (final p in ctrl.engine.notebook.where((p) => p.type == PacketType.sos)) {
         merged[p.id] = _fromPacket(p, _status(ctrl, p, now));
       }
@@ -115,29 +103,28 @@ class _NgoShellState extends ConsumerState<NgoShell> with SingleTickerProviderSt
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('AIDBRIDGE COMMAND'),
+        title: Text(s.ngoCommandTitle),
         actions: [TextButton(
-            onPressed: () async { // role = view swap only; mesh keeps breathing (no 8009 dance)
+            onPressed: () async {
               await ref.read(identityProvider.notifier).setRole('civilian');
               if (context.mounted) context.go('/civilian');
             },
-            child: const Text('CIVILIAN VIEW', style: TextStyle(color: AC.primary))),
+            child: Text(s.civilianViewBtn, style: const TextStyle(color: AC.primary))),
         ],
-        bottom: TabBar(controller: _tabs, tabs: const [
-          Tab(text: 'INCIDENTS', icon: Icon(Icons.crisis_alert)),
-          Tab(text: 'MAP', icon: Icon(Icons.map)),
-          Tab(text: 'BRIDGE', icon: Icon(Icons.settings_input_antenna)),
+        bottom: TabBar(controller: _tabs, tabs: [
+          Tab(text: s.tabIncidents, icon: const Icon(Icons.crisis_alert)),
+          Tab(text: s.tabMap, icon: const Icon(Icons.map)),
+          Tab(text: s.tabBridge, icon: const Icon(Icons.settings_input_antenna)),
+          Tab(text: s.tabSettings, icon: const Icon(Icons.settings_suggest)),
         ]),
       ),
       body: Column(children: [
-        // A command dashboard must not be hijacked by a modal on every inbound SOS — but the
-        // siren still needs ONE reachable off switch, or an NGO phone screams with no way to
-        // stop it. Vanishes by itself when the sender resolves (mesh clears alertPacket).
         if (m.alertPacket != null) _SirenBar(packet: m.alertPacket!),
         Expanded(child: TabBarView(controller: _tabs, children: [
           _IncidentsTab(incidents: incidents, cloudError: cloudAsync.hasError),
           _MapTab(incidents: incidents),
           _BridgeTab(mesh: m),
+          const SettingsScreen(),
         ])),
       ]),
     );
@@ -156,17 +143,16 @@ class _IncidentsTab extends ConsumerWidget {
   const _IncidentsTab({required this.incidents, required this.cloudError});
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
     if (incidents.isEmpty) {
-      return const Center(child: Text('No incidents in sight.\n(connect victims via mesh or internet)',
-          textAlign: TextAlign.center, style: TextStyle(color: AC.dim)));
+      return Center(child: Text(s.noIncidents,
+          textAlign: TextAlign.center, style: const TextStyle(color: AC.dim)));
     }
     final active = incidents.where((r) => r.status == PacketStatus.active).length;
     return Column(children: [
       Container(width: double.infinity, color: AC.surface,
           padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 14),
-          child: Text(cloudError
-                  ? '⚠ $active ACTIVE   •   ${incidents.length} total   •   ☁ CLOUD FEED UNAVAILABLE — local mesh only'
-                  : '⚠ $active ACTIVE   •   ${incidents.length} total   •   ☁ live Firestore feed ⋯ local notebook merged',
+          child: Text(s.activeSummary(active, incidents.length, cloudError: cloudError),
               style: TextStyle(color: cloudError ? AC.sos : AC.dim, fontSize: 12))),
       Expanded(child: ListView.separated(
         padding: const EdgeInsets.all(10), itemCount: incidents.length,
@@ -176,21 +162,20 @@ class _IncidentsTab extends ConsumerWidget {
           final color = r.status == PacketStatus.active ? AC.sos
               : (r.status == PacketStatus.resolved ? AC.safe : AC.mute);
           return InkWell(
-            onTap: () => showIncidentSheet(ctx, r),
+            onTap: () => showIncidentSheet(ctx, r, s),
             borderRadius: BorderRadius.circular(AR.r12),
             child: Container(padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(color: AC.surface, borderRadius: BorderRadius.circular(AR.r12),
-                  // triage at a glance: the card itself is tinted by status
                   border: Border.all(color: color.withValues(alpha: 0.45))),
               child: Row(children: [
                 Text(catIcon(r.category), style: const TextStyle(fontSize: 30)),
                 const SizedBox(width: 10),
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(r.name, style: const TextStyle(color: AC.text, fontWeight: FontWeight.w800, fontSize: 16)),
-                  Text('${timeAgo(r.createdAt)} • via ${r.hops} • ${r.fromCloud ? "☁ cloud" : "📻 local"}${r.lat != null ? " • 📍" : ""}',
+                  Text('${timeAgo(r.createdAt)} • ${s.viaPhones} ${r.hops} • ${r.fromCloud ? s.cloudSrcShort : s.localSrcShort}${r.lat != null ? " • 📍" : ""}',
                       style: const TextStyle(color: AC.dim, fontSize: 12)),
                 ])),
-                statusChip(r.status),
+                statusChip(r.status, s),
               ]),
             ),
           );
@@ -201,38 +186,39 @@ class _IncidentsTab extends ConsumerWidget {
 }
 
 // ---------- TAB 2: COMMAND MAP ----------
-class _MapTab extends StatelessWidget {
+class _MapTab extends ConsumerWidget {
   final List<IncidentRow> incidents;
   const _MapTab({required this.incidents});
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
     final withCoords = incidents.where((r) => r.lat != null && r.lng != null).toList();
     final center = withCoords.isNotEmpty
         ? LatLng(withCoords.first.lat!, withCoords.first.lng!)
-        : const LatLng(24.8607, 67.0011); // Karachi fallback — grid center, not magic
+        : const LatLng(24.8607, 67.0011);
     return Stack(children: [
       FlutterMap(
         options: MapOptions(initialCenter: center, initialZoom: 11),
         children: [
           TileLayer(urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
               userAgentPackageName: 'com.aidbridge.aidbridge'),
-          MarkerLayer(markers: [for (final r in withCoords) _pin(r)]),
+          MarkerLayer(markers: [for (final r in withCoords) _pin(r, s)]),
         ],
       ),
       Positioned(top: 10, left: 10, right: 10, child: Container(
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(color: AC.surface, borderRadius: BorderRadius.circular(AR.r8),
             border: Border.all(color: AC.border)),
-        child: Text('📍 ${withCoords.length} located incidents  •  tiles: OpenStreetMap (needs internet)',
+        child: Text(s.locatedIncidents(withCoords.length),
             style: const TextStyle(color: AC.dim, fontSize: 12), textAlign: TextAlign.center),
       )),
     ]);
   }
 
-  Marker _pin(IncidentRow r) => Marker(
+  Marker _pin(IncidentRow r, S s) => Marker(
     point: LatLng(r.lat!, r.lng!), width: 130, height: 62,
     child: Builder(builder: (ctx) => GestureDetector(
-      onTap: () => showIncidentSheet(ctx, r), // MAP INTERACTION LAW: pin -> bottom sheet
+      onTap: () => showIncidentSheet(ctx, r, s),
       child: Column(children: [
         Icon(Icons.location_pin, size: 34,
             color: r.status == PacketStatus.active ? AC.sos
@@ -253,21 +239,18 @@ class _BridgeTab extends ConsumerWidget {
   const _BridgeTab({required this.mesh});
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final ready = ref.watch(bridgeReadyProvider); // rebuilds the moment Firebase comes up
+    final s = ref.watch(stringsProvider);
+    final ready = ref.watch(bridgeReadyProvider);
     final bridge = ref.read(bridgeProvider);
     return ListView(padding: const EdgeInsets.all(16), children: [
-    _row('BRIDGE', ready ? 'READY — uplinks on sight' : bridge.status, ready ? AC.safe : AC.mute),
-    _row('MESH', mesh.transportUp ? 'ONLINE' : 'OFFLINE', mesh.transportUp ? AC.safe : AC.mute),
-    _row('PEERS CONNECTED', '${mesh.peers}', AC.text),
-    _row('NOTEBOOK CARRIED', '${mesh.notebookCount} letters', AC.text),
-    _row('DEDUP MEMORY', '${mesh.seenCount}', AC.text),
+    _row(s.bridgeReadyLabel, ready ? s.bridgeReadyStatus : bridge.status, ready ? AC.safe : AC.mute),
+    _row(s.meshLabel, mesh.transportUp ? s.onlineLabel : s.offlineLabel, mesh.transportUp ? AC.safe : AC.mute),
+    _row(s.peersConnected, '${mesh.peers}', AC.text),
+    _row(s.notebookCarriedLabel, s.notebookLetters(mesh.notebookCount), AC.text),
+    _row(s.dedupMemoryLabel, '${mesh.seenCount}', AC.text),
     const SizedBox(height: 10),
-    const Text('Any phone with internet becomes a bridge: SOS letters ride the mesh to it, '
-        'then teleport to this cloud. Chat never leaves the mesh (privacy partition).',
-        style: TextStyle(color: AC.dim, fontSize: 13)),
+    Text(s.bridgeExplain, style: const TextStyle(color: AC.dim, fontSize: 13)),
     const SizedBox(height: 14),
-    // LIVE MESH CHATTER: the protocol is invisible radio traffic — printing it turns
-    // "trust us, it relays" into something a judge can watch happen in real time.
     Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(color: AC.surface, borderRadius: BorderRadius.circular(AR.r12),
@@ -276,13 +259,13 @@ class _BridgeTab extends ConsumerWidget {
         Row(children: [
           const Icon(Icons.terminal, color: AC.dim, size: 14),
           const SizedBox(width: 6),
-          const Expanded(child: Text('LIVE MESH LOG',
-              style: TextStyle(color: AC.dim, fontWeight: FontWeight.w700, fontSize: 12))),
+          Expanded(child: Text(s.liveMeshLog,
+              style: const TextStyle(color: AC.dim, fontWeight: FontWeight.w700, fontSize: 12))),
           Text('${mesh.log.length}', style: const TextStyle(color: AC.mute, fontSize: 11)),
         ]),
         const SizedBox(height: 8),
         if (mesh.log.isEmpty)
-          const Text('waiting for radio traffic…', style: TextStyle(color: AC.mute, fontSize: 11))
+          Text(s.waitingRadioTraffic, style: const TextStyle(color: AC.mute, fontSize: 11))
         else
           for (final line in mesh.log.take(18))
             Padding(padding: const EdgeInsets.only(bottom: 2),
@@ -304,8 +287,8 @@ class _BridgeTab extends ConsumerWidget {
   );
 }
 
-// ---------- INCIDENT SHEET (pin tap / row tap — one law, two doors) ----------
-void showIncidentSheet(BuildContext ctx, IncidentRow r) {
+// ---------- INCIDENT SHEET ----------
+void showIncidentSheet(BuildContext ctx, IncidentRow r, S s) {
   showModalBottomSheet(context: ctx, backgroundColor: AC.surface, showDragHandle: true,
     builder: (sctx) => Padding(
       padding: const EdgeInsets.fromLTRB(20, 0, 20, 26),
@@ -313,10 +296,10 @@ void showIncidentSheet(BuildContext ctx, IncidentRow r) {
         Row(children: [
           Text(catIcon(r.category), style: const TextStyle(fontSize: 36)), const SizedBox(width: 10),
           Expanded(child: Text(r.name, style: const TextStyle(color: AC.text, fontSize: 20, fontWeight: FontWeight.w900))),
-          statusChip(r.status),
+          statusChip(r.status, s),
         ]),
         const SizedBox(height: 6),
-        Text('${catName(r.category)} • ${timeAgo(r.createdAt)} • via ${r.hops} phones • ${r.fromCloud ? "cloud ☁" : "local mesh 📻"}',
+        Text('${catName(r.category, s)} • ${timeAgo(r.createdAt)} • ${s.viaPhones} ${r.hops} • ${r.fromCloud ? s.cloudSrc : s.localMeshSrc}',
             style: const TextStyle(color: AC.dim)),
         if (r.text.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8),
             child: Text('“${r.text}”', style: const TextStyle(color: AC.text, fontStyle: FontStyle.italic))),
@@ -324,7 +307,7 @@ void showIncidentSheet(BuildContext ctx, IncidentRow r) {
             child: OutlinedButton.icon(
               style: OutlinedButton.styleFrom(side: const BorderSide(color: AC.border), minimumSize: const Size.fromHeight(44)),
               onPressed: () { Clipboard.setData(ClipboardData(text: '${r.lat}, ${r.lng}'));
-              ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Coordinates copied'))); },
+              ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text(s.coordinatesCopied))); },
               icon: const Icon(Icons.copy, color: AC.primary),
               label: Text('📍 ${r.lat!.toStringAsFixed(5)}, ${r.lng!.toStringAsFixed(5)}', style: const TextStyle(color: AC.text)),
             )),
@@ -333,16 +316,16 @@ void showIncidentSheet(BuildContext ctx, IncidentRow r) {
               style: FilledButton.styleFrom(backgroundColor: AC.safe),
               onPressed: () => dialPhone(ctx, r.phone!),
               icon: const Icon(Icons.call, color: Colors.black),
-              label: Text('CALL ${r.phone}', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.w900)),
+              label: Text('${s.callLabel} ${r.phone}', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.w900)),
             )),
       ]),
     ),
   );
 }
 
-Widget statusChip(PacketStatus st) {
+Widget statusChip(PacketStatus st, S s) {
   final color = st == PacketStatus.active ? AC.sos : (st == PacketStatus.resolved ? AC.safe : AC.mute);
-  final label = st == PacketStatus.active ? 'ACTIVE' : (st == PacketStatus.resolved ? 'SAFE' : 'EXPIRED');
+  final label = st == PacketStatus.active ? s.active : (st == PacketStatus.resolved ? s.resolved : s.expired);
   final icon = st == PacketStatus.active ? Icons.campaign : Icons.check_circle;
   return Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
     decoration: BoxDecoration(color: color.withValues(alpha: 0.14),
@@ -354,8 +337,6 @@ Widget statusChip(PacketStatus st) {
   );
 }
 
-/// The NGO phone's only siren off-switch: a persistent bar instead of a modal, so an
-/// operator triaging 50 incidents is never blocked, but is never trapped by the alarm either.
 class _SirenBar extends ConsumerWidget {
   final AidPacket packet;
   const _SirenBar({required this.packet});
@@ -376,11 +357,10 @@ class _SirenBar extends ConsumerWidget {
             Text('${s.incomingSos} — ${packet.senderName}${waiting > 1 ? '  (+${waiting - 1})' : ''}',
                 maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
-            Text('${catIcon(cat)} ${catName(cat)}  •  ${s.viaPhones} ${packet.hops} ${s.seenByN}',
+            Text('${catIcon(cat)} ${catName(cat, s)}  •  ${s.viaPhones} ${packet.hops} ${s.seenByN}',
                 maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: Colors.white70, fontSize: 12)),
           ])),
-          // Acknowledge just this one when others are queued; silence everything on the last.
           TextButton(
             onPressed: () => waiting > 1
                 ? ref.read(meshProvider.notifier).dismissAlert(packet.id)
@@ -396,5 +376,5 @@ class _SirenBar extends ConsumerWidget {
 
 String catIcon(String c) => switch (c) {
   'medical' => '🏥', 'waterFood' => '💧', 'rescue' => '🆘', 'custom' => '✏️', _ => '🆘' };
-String catName(String c) => switch (c) {
-  'medical' => 'Medical', 'waterFood' => 'Water/Food', 'rescue' => 'Rescue', 'custom' => 'Other', _ => 'Other' };
+String catName(String c, S s) => switch (c) {
+  'medical' => s.catMedical, 'waterFood' => s.catWater, 'rescue' => s.catRescue, 'custom' => s.catCustom, _ => s.catCustom };
