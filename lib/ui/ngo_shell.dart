@@ -233,14 +233,22 @@ class _MapTab extends ConsumerWidget {
 }
 
 // ---------- TAB 3: BRIDGE ----------
-class _BridgeTab extends ConsumerWidget {
+class _BridgeTab extends ConsumerStatefulWidget {
   final MeshState mesh;
   const _BridgeTab({required this.mesh});
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_BridgeTab> createState() => _BridgeTabState();
+}
+
+class _BridgeTabState extends ConsumerState<_BridgeTab> {
+  bool _clearing = false;
+
+  @override
+  Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
     final ready = ref.watch(bridgeReadyProvider);
     final bridge = ref.read(bridgeProvider);
+    final mesh = widget.mesh;
     return ListView(padding: const EdgeInsets.all(16), children: [
     _row(s.bridgeReadyLabel, ready ? s.bridgeReadyStatus : bridge.status, ready ? AC.safe : AC.mute),
     _row(s.meshLabel, mesh.transportUp ? s.onlineLabel : s.offlineLabel, mesh.transportUp ? AC.safe : AC.mute),
@@ -249,7 +257,43 @@ class _BridgeTab extends ConsumerWidget {
     _row(s.dedupMemoryLabel, '${mesh.seenCount}', AC.text),
         const SizedBox(height: 10),
     Text(s.bridgeExplain, style: const TextStyle(color: AC.dim, fontSize: 13)),
+    const SizedBox(height: 18),
+    // NGO DASHBOARD RESET: wipes cloud + this phone's notebook. Never one stray tap away.
+    OutlinedButton.icon(
+      style: OutlinedButton.styleFrom(side: const BorderSide(color: AC.sos), minimumSize: const Size.fromHeight(kMinTarget)),
+      onPressed: (!ready || _clearing) ? null : () => _confirmClearAll(s),
+      icon: _clearing
+          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: AC.sos))
+          : const Icon(Icons.delete_forever, color: AC.sos),
+      label: Text(s.clearAllIncidents, style: const TextStyle(color: AC.sos, fontWeight: FontWeight.w900)),
+    ),
   ]);
+  }
+
+  Future<void> _confirmClearAll(S s) async {
+    final messenger = ScaffoldMessenger.of(context); // captured BEFORE the await gap
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AC.surface,
+        title: Text(s.clearAllIncidents, style: const TextStyle(color: AC.text)),
+        content: Text(s.clearAllIncidentsQ, style: const TextStyle(color: AC.dim)),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false),
+              child: Text(s.cancel, style: const TextStyle(color: AC.dim))),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(true),
+              child: Text(s.erase, style: const TextStyle(color: AC.sos, fontWeight: FontWeight.w900))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _clearing = true);
+    try {
+      await ref.read(meshProvider.notifier).clearAllIncidents();
+      messenger.showSnackBar(SnackBar(content: Text(s.allIncidentsCleared)));
+    } finally {
+      if (mounted) setState(() => _clearing = false);
+    }
   }
 
   Widget _row(String k, String v, Color c) => Container(

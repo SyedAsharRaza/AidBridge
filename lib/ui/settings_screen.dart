@@ -133,14 +133,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         label: Text(_restarting ? s.restartingMesh : s.restartMesh,
             style: const TextStyle(color: AC.text, fontWeight: FontWeight.w800)),
       ),
-      const SizedBox(height: 12),
-      // REHEARSAL RESET: wipes local state between demo runs so every run starts clean.
-      OutlinedButton.icon(
-        style: OutlinedButton.styleFrom(side: const BorderSide(color: AC.border), minimumSize: const Size.fromHeight(kMinTarget)),
-        onPressed: () => _confirmClear(s),
-        icon: const Icon(Icons.delete_sweep, color: AC.mute),
-        label: Text(s.clearNotebook, style: const TextStyle(color: AC.text)),
-      ),
+      if (id?.role != 'ngo') ...[
+        const SizedBox(height: 12),
+        // REHEARSAL RESET: wipes local state between demo runs so every run starts clean.
+        OutlinedButton.icon(
+          style: OutlinedButton.styleFrom(side: const BorderSide(color: AC.border), minimumSize: const Size.fromHeight(kMinTarget)),
+          onPressed: () => _confirmClear(s),
+          icon: const Icon(Icons.delete_sweep, color: AC.mute),
+          label: Text(s.clearNotebook, style: const TextStyle(color: AC.text)),
+        ),
+      ],
     ]);
   }
 

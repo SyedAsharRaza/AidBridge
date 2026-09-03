@@ -508,6 +508,26 @@ class MeshController extends StateNotifier<MeshState> {
     _log('NOTEBOOK CLEARED (this phone only — peers still carry their copies)');
   }
 
+  /// NGO DASHBOARD RESET — deletes every incident from Firestore AND wipes this
+  /// phone's local copy, so Incidents + Map both go back to zero.
+  /// HONEST LIMIT: this is not a mesh-wide erase. Any nearby phone that is still
+  /// carrying one of these SOS letters in its own notebook keeps it, and can hand
+  /// it back to this phone (or re-uplink it) the next time they connect. Treat
+  /// this as "reset the dashboard for the next run," not "this data is gone forever."
+  Future<void> clearAllIncidents() async {
+    await ref.read(bridgeProvider).clearAllCloudIncidents();
+    if (_engine != null) {
+      _engine!.clearNotebook();
+      await stopSiren();
+      state = state.copyWith(clearOwnSos: true);
+      _lastSosAt = null;
+      _refreshCounts();
+      await _persist();
+    }
+    _log('ALL INCIDENTS CLEARED — cloud wiped + this phone\'s notebook wiped '
+        '(peers still carrying old letters can resurface them)');
+  }
+
   Future<void> _heartbeat() async {
     final r = _engine?.heartbeatTick(DateTime.now().toUtc());
     if (r != null) { _log(r.note); _flushAll(); _persist(); }

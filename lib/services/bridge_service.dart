@@ -50,4 +50,22 @@ class BridgeService {
       return 'uplink error: $e';
     }
   }
+
+  /// NGO DASHBOARD RESET — deletes every document in the `sos` collection.
+  /// Irreversible on the cloud side. Batched (Firestore caps a batch at 500 writes)
+  /// so this keeps working even with a full 200-incident feed.
+  Future<void> clearAllCloudIncidents() async {
+    if (!ready || _db == null) return;
+    const chunk = 400;
+    while (true) {
+      final snap = await _db!.collection('sos').limit(chunk).get();
+      if (snap.docs.isEmpty) break;
+      final batch = _db!.batch();
+      for (final d in snap.docs) {
+        batch.delete(d.reference);
+      }
+      await batch.commit();
+      if (snap.docs.length < chunk) break;
+    }
+  }
 }

@@ -72,6 +72,13 @@ class S {
   String get cancel => _p('CANCEL', 'منسوخ');
   String get erase => _p('ERASE', 'مٹا دیں');
   String get notebookCleared => _p('Notebook cleared', 'نوٹ بک خالی کر دی گئی');
+  String get clearAllIncidents => _p('CLEAR ALL INCIDENTS', 'تمام واقعات خالی کریں');
+  String get clearAllIncidentsQ => _p(
+      'Erase every incident from the cloud AND this phone — Incidents and Map both go back to zero. '
+      'Nearby phones still carrying an old SOS may hand it back later.',
+      'کلاؤڈ اور اس فون سے تمام واقعات مٹا دیں — واقعات اور نقشہ دونوں صفر پر آ جائیں گے۔ '
+      'قریبی فون جو پرانا ایس او ایس ابھی تک رکھتے ہیں بعد میں واپس دے سکتے ہیں۔');
+  String get allIncidentsCleared => _p('All incidents cleared', 'تمام واقعات خالی کر دیے گئے');
   String get silence => _p('SILENCE', 'خاموش کریں');
   String get nextAlert => _p('GOT IT — NEXT ALERT', 'سمجھ گیا — اگلا الرٹ');
   String get nameRequired => _p('Enter a call sign first — it is how rescuers will see you',
