@@ -1,4 +1,3 @@
-import 'package:aidbridge/ui/ngo_change_password.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -70,8 +69,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           Text('radio ID: ${id?.selfId ?? "—"}', style: const TextStyle(color: AC.mute, fontSize: 12)),
         ]),
       ),
+      const SizedBox(height: 12),
       Text('${s.role}: ${id?.role == 'ngo' ? s.ngo : s.civilian}',
         style: const TextStyle(color: AC.dim)),
+      const SizedBox(height: 12),
+      Row(children: [
+        Text('${s.language}: ', style: const TextStyle(color: AC.dim)),
+        const SizedBox(width: 8),
+        Expanded(child: DropdownButtonFormField<AppLang>(
+          initialValue: ref.watch(localeProvider),
+          items: const [DropdownMenuItem(value: AppLang.en, child: Text('English')),
+            DropdownMenuItem(value: AppLang.ur, child: Text('اردو'))],
+          onChanged: (v) { if (v != null) ref.read(localeProvider.notifier).set(v); },
+        )),
+      ]),
       const SizedBox(height: 12),
       OutlinedButton.icon(
         style: OutlinedButton.styleFrom(side: const BorderSide(color: AC.border), minimumSize: const Size.fromHeight(kMinTarget)),
