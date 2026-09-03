@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+// ignore: unused_import
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 import '../app/mesh.dart';
@@ -103,7 +104,12 @@ class _NgoShellState extends ConsumerState<NgoShell> with SingleTickerProviderSt
 
     return Scaffold(
         appBar: AppBar(
-        title: Text(s.ngoCommandTitle),
+        title: Row(children: [
+          Text(s.ngoCommandTitle),
+          const SizedBox(width: 8),
+          Text('• ${ref.watch(identityProvider)?.name ?? ""}',
+              style: const TextStyle(fontSize: 13, color: AC.dim, fontWeight: FontWeight.normal)),
+        ]),
         bottom: TabBar(controller: _tabs, tabs: [
           Tab(text: s.tabIncidents, icon: const Icon(Icons.crisis_alert)),
           Tab(text: s.tabMap, icon: const Icon(Icons.map)),

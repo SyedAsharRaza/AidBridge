@@ -159,6 +159,32 @@ class S {
     final state = online ? onlineLabel : offlineLabel;
     return '⚡ $state   •   ${peersLabel} $peers   •   ${seenLabel} $seen   •   ${notebookLabel} $notebook';
   }
+  String get ngoEmail => _p('NGO Email', 'ادارے کا ای میل');
+  String get ngoPassword => _p('Password', 'پاسورڈ');
+  String get signIn => _p('SIGN IN', 'سائن ان');
+  String get signInFailed => _p('Sign in failed. Check your email and password.', 'سائن ان ناکام۔ ای میل اور پاسورڈ چیک کریں۔');
+  String get forgotPassword => _p('Forgot password?', 'پاسورڈ بھول گئے؟');
+  String get forgotPasswordHint => _p('Enter your NGO email and we\'ll send a reset code.', 'اپنا ادارے کا ای میل درج کریں، ہم ری سیٹ کوڈ بھیجیں گے۔');
+  String get sendCode => _p('SEND CODE', 'کوڈ بھیجیں');
+  String get verify => _p('VERIFY', 'تصدیق کریں');
+  String get resendCode => _p('Resend Code', 'کوڈ دوبارہ بھیجیں');
+  String get resendIn => _p('Resend in', 'دوبارہ بھیجیں');
+  String get fillAllFields => _p('Please fill all fields.', 'براہ کرم تمام خانے پُر کریں۔');
+  String get sendCodeFailed => _p('Could not send code. Try again.', 'کوڈ نہیں بھیجا جا سکا۔ دوبارہ کوشش کریں۔');
+  String get resetPassword => _p('Reset Password', 'پاسورڈ ری سیٹ کریں');
+  String get resetCode => _p('Reset Code', 'ری سیٹ کوڈ');
+  String get resetCodeHint => _p('Paste the code from the reset link in your email.', 'اپنی ای میل میں موجود لنک سے کوڈ یہاں پیسٹ کریں۔');
+  String get newPassword => _p('New Password', 'نیا پاسورڈ');
+  String get confirmPassword => _p('Confirm Password', 'پاسورڈ کی تصدیق کریں');
+  String get currentPassword => _p('Current Password', 'موجودہ پاسورڈ');
+  String get resetPasswordBtn => _p('RESET PASSWORD', 'پاسورڈ ری سیٹ کریں');
+  String get passwordTooShort => _p('Password must be at least 6 characters.', 'پاسورڈ کم از کم 6 حروف کا ہونا چاہیے۔');
+  String get passwordsDontMatch => _p('Passwords don\'t match.', 'پاسورڈز مماثل نہیں ہیں۔');
+  String get passwordMustDiffer => _p('New password must be different from the current one.', 'نیا پاسورڈ موجودہ پاسورڈ سے مختلف ہونا چاہیے۔');
+  String get passwordResetSuccess => _p('Password updated.', 'پاسورڈ اپ ڈیٹ ہو گیا۔');
+  String get passwordResetFailed => _p('Could not update password. Try again.', 'پاسورڈ اپ ڈیٹ نہیں ہو سکا۔ دوبارہ کوشش کریں۔');
+  String get wrongCurrentPassword => _p('Current password is incorrect.', 'موجودہ پاسورڈ غلط ہے۔');
+  String get notSignedIn => _p('You are not signed in.', 'آپ سائن ان نہیں ہیں۔');
 }
 
 String timeAgo(int epochSec, {bool ur = false}) {

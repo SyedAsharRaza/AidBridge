@@ -13,6 +13,8 @@ import '../protocol/protocol_engine.dart';
 import '../transport/nearby_connections_transport.dart';
 import '../transport/nearby_transport.dart';
 import '../services/bridge_service.dart';
+import 'package:firebase_auth/firebase_auth.dart' as fb;
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 /// Shipped asset (16-bit PCM WAV — decodes on every Android without a codec gamble).
@@ -39,7 +41,9 @@ class MeshIdentity {
   final String? phone;
   final String role;      // 'civilian' | 'ngo'
   final bool onboarded;
-  const MeshIdentity(this.selfId, this.name, this.phone, {this.role = 'civilian', this.onboarded = false});
+  final String? ngoUid;   // Firebase Auth uid — only set once role == 'ngo' and signed in
+  const MeshIdentity(this.selfId, this.name, this.phone,
+      {this.role = 'civilian', this.onboarded = false, this.ngoUid});
 }
 
 final identityProvider = StateNotifierProvider<IdentityStore, MeshIdentity?>((ref) => IdentityStore());
@@ -61,12 +65,32 @@ class IdentityStore extends StateNotifier<MeshIdentity?> {
     final name = p.getString('name') ?? 'Guardian-${id.substring(4)}';
     if (p.getString('name') == null) await p.setString('name', name);
     state = MeshIdentity(id, name, p.getString('phone'),
-        role: p.getString('role') ?? 'civilian', onboarded: p.getBool('onboarded') ?? false);
+        role: p.getString('role') ?? 'civilian', onboarded: p.getBool('onboarded') ?? false,
+        ngoUid: p.getString('ngoUid'));
   }
   Future<void> setName(String v) async => _save(name: v);
   Future<void> setPhone(String v) async => _save(phone: v.trim().isEmpty ? null : v.trim());
   Future<void> setRole(String v) async => _save(role: v);
   Future<void> completeOnboarding() async => _save(onboarded: true);
+
+  /// NGO SIGN-IN LAW: accounts are pre-provisioned in Firebase (no signup flow). This only
+  /// authenticates and pulls the org name from Firestore — it never creates an account.
+  Future<String> signInNgo(String email, String password) async {
+    final cred = await fb.FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: email.trim(), password: password);
+    final uid = cred.user!.uid;
+    final doc = await FirebaseFirestore.instance.collection('ngos').doc(uid).get();
+    final orgName = (doc.data()?['name'] as String?) ?? cred.user!.email ?? 'NGO';
+    final p = await SharedPreferences.getInstance();
+    await p.setString('name', orgName);
+    await p.setString('role', 'ngo');
+    await p.setBool('onboarded', true);
+    await p.setString('ngoUid', uid);
+    state = MeshIdentity(state?.selfId ?? uid, orgName, state?.phone,
+        role: 'ngo', onboarded: true, ngoUid: uid);
+    return orgName;
+  }
+
   Future<void> _save({String? name, String? phone, String? role, bool? onboarded}) async {
     if (state == null) return;
     final p = await SharedPreferences.getInstance();
@@ -75,7 +99,7 @@ class IdentityStore extends StateNotifier<MeshIdentity?> {
     await p.setString('name', n);
     if (ph == null) { await p.remove('phone'); } else { await p.setString('phone', ph); }
     await p.setString('role', r); await p.setBool('onboarded', ob);
-    state = MeshIdentity(state!.selfId, n, ph, role: r, onboarded: ob);
+    state = MeshIdentity(state!.selfId, n, ph, role: r, onboarded: ob, ngoUid: state!.ngoUid);
   }
 }
 // ---------- MESH STATE ----------

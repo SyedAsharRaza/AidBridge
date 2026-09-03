@@ -14,7 +14,7 @@ class BridgeService {
 
   Future<void> init() async {
     try {
-      await Firebase.initializeApp(); // configured natively from google-services.json
+      if (Firebase.apps.isEmpty) await Firebase.initializeApp(); // configured natively from google-services.json
       _db = FirebaseFirestore.instance;
       ready = true;
       status = 'BRIDGE READY — uplinks on sight';

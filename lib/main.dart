@@ -5,9 +5,11 @@ import 'app/mesh.dart';
 import 'app/router.dart';
 import 'ui/design_tokens.dart';
 import 'ui/strings.dart';
+import 'package:firebase_core/firebase_core.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (Firebase.apps.isEmpty) await Firebase.initializeApp(); 
   final container = ProviderContainer();
   await container.read(identityProvider.notifier).load(); // identity BEFORE routes: no auth flapping
   runApp(UncontrolledProviderScope(container: container, child: const AidBridgeApp()));
