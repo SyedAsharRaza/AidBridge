@@ -335,10 +335,10 @@ packages:
     dependency: "direct dev"
     description:
       name: flutter_native_splash
-      sha256: "9db4b80b044e9af17cc4b1272137fc7ace0054d879ef8210a76adc34aaf4cdff"
+      sha256: "4fb9f4113350d3a80841ce05ebf1976a36de622af7d19aca0ca9a9911c7ff002"
       url: "https://pub.dev"
     source: hosted
-    version: "2.4.8"
+    version: "2.4.7"
   flutter_riverpod:
     dependency: "direct main"
     description:
@@ -357,6 +357,38 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  geocoding:
+    dependency: "direct main"
+    description:
+      name: geocoding
+      sha256: "40f845e0a5505d4b47da991057f2ab25cd1c68bc4570255c7d4cfbb03a952063"
+      url: "https://pub.dev"
+    source: hosted
+    version: "5.0.0"
+  geocoding_android:
+    dependency: transitive
+    description:
+      name: geocoding_android
+      sha256: c4f49a08f1761a3d078f35969b20f50445ff023b861c00316ac01554f0786942
+      url: "https://pub.dev"
+    source: hosted
+    version: "5.0.2"
+  geocoding_darwin:
+    dependency: transitive
+    description:
+      name: geocoding_darwin
+      sha256: "97552aa24f1453defc17e4d8e40b13ddf097e669c2edfa17ed86349cacdbc1ae"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.3"
+  geocoding_platform_interface:
+    dependency: transitive
+    description:
+      name: geocoding_platform_interface
+      sha256: "5164b8871705af7573698b3aa0746337faf818d72b488988741bcc7aeedd2f6e"
+      url: "https://pub.dev"
+    source: hosted
+    version: "5.0.0"
   geolocator:
     dependency: "direct main"
     description:
@@ -457,10 +489,10 @@ packages:
     dependency: transitive
     description:
       name: intl
-      sha256: "1ca20c894b1717686a2319b8548763d812bc0aabdac580420a44c5178c57a867"
+      sha256: "3df61194eb431efc39c4ceba583b95633a403f46c9fd341e550ce0bfa50e9aa5"
       url: "https://pub.dev"
     source: hosted
-    version: "0.20.3"
+    version: "0.20.2"
   jni:
     dependency: transitive
     description:
@@ -569,10 +601,10 @@ packages:
     dependency: transitive
     description:
       name: matcher
-      sha256: "31bd099b47c10cd1aeb55146a2d46ce0277630ecef3f7dae54ad7873f36696cd"
+      sha256: dc0b7dc7651697ea4ff3e69ef44b0407ea32c487a39fff6a4004fa585e901861
       url: "https://pub.dev"
     source: hosted
-    version: "0.12.20"
+    version: "0.12.19"
   material_color_utilities:
     dependency: transitive
     description:
@@ -585,10 +617,10 @@ packages:
     dependency: transitive
     description:
       name: meta
-      sha256: "307249ce4ff29d58a18e97f6345f539382eb9c9c29ecda628900f31de0443dd9"
+      sha256: "23f08335362185a5ea2ad3a4e597f1375e78bce8a040df5c600c8d3552ef2394"
       url: "https://pub.dev"
     source: hosted
-    version: "1.19.0"
+    version: "1.17.0"
   mgrs_dart:
     dependency: transitive
     description:
@@ -809,10 +841,10 @@ packages:
     dependency: transitive
     description:
       name: shared_preferences_android
-      sha256: "1e12aafe408aa50da80edfd679a2a6bf63ba7ab37c7fa98286da459a757b3399"
+      sha256: e8d4762b1e2e8578fc4d0fd548cebf24afd24f49719c08974df92834565e2c53
       url: "https://pub.dev"
     source: hosted
-    version: "2.4.28"
+    version: "2.4.23"
   shared_preferences_foundation:
     dependency: transitive
     description:
@@ -902,10 +934,10 @@ packages:
     dependency: transitive
     description:
       name: synchronized
-      sha256: "3a7b5d17422dd0f8d5c6c14feaa5a1c65638b9455f871a96f08437562c046931"
+      sha256: "63896c27e81b28f8cb4e69ead0d3e8f03f1d1e5fc531a3e579cabed6a2c7c9e5"
       url: "https://pub.dev"
     source: hosted
-    version: "3.4.1+2"
+    version: "3.4.0+1"
   term_glyph:
     dependency: transitive
     description:
@@ -918,10 +950,10 @@ packages:
     dependency: transitive
     description:
       name: test_api
-      sha256: "2a122cbe059f8b610d3a5415f42e255b6c17b1f21eee1d960f31080237fb4f11"
+      sha256: "8161c84903fd860b26bfdefb7963b3f0b68fee7adea0f59ef805ecca346f0c7a"
       url: "https://pub.dev"
     source: hosted
-    version: "0.7.12"
+    version: "0.7.10"
   typed_data:
     dependency: transitive
     description:
@@ -958,10 +990,10 @@ packages:
     dependency: transitive
     description:
       name: url_launcher_android
-      sha256: "611e87fb320b70d1dd721dc46af89c98aceccea9b31fde49e084591414e0c610"
+      sha256: "17bc677f0b301615530dd1d67e0a9828cafa2d0b6b6eae4cd3679b7eac4a273c"
       url: "https://pub.dev"
     source: hosted
-    version: "6.3.33"
+    version: "6.3.30"
   url_launcher_ios:
     dependency: transitive
     description:
@@ -1022,10 +1054,10 @@ packages:
     dependency: transitive
     description:
       name: vector_math
-      sha256: f36f9f3be64c6198714492bb455c11056e33e2f85d9a0b676a48301e44fdcf47
+      sha256: d530bd74fea330e6e364cda7a85019c434070188383e1cd8d9777ee586914c5b
       url: "https://pub.dev"
     source: hosted
-    version: "2.4.2"
+    version: "2.2.0"
   vm_service:
     dependency: transitive
     description:
@@ -1062,10 +1094,10 @@ packages:
     dependency: transitive
     description:
       name: xml
-      sha256: "67f0aff7be013d107995e9b75bf4e7f2c3ef2dfdb2c8e68024bba0a7fd5756a4"
+      sha256: "971043b3a0d3da28727e40ed3e0b5d18b742fa5a68665cca88e74b7876d5e025"
       url: "https://pub.dev"
     source: hosted
-    version: "7.0.1"
+    version: "6.6.1"
   yaml:
     dependency: transitive
     description:
@@ -1075,5 +1107,5 @@ packages:
     source: hosted
     version: "3.1.4"
 sdks:
-  dart: ">=3.12.0 <4.0.0"
-  flutter: ">=3.44.0"
+  dart: ">=3.11.5 <4.0.0"
+  flutter: ">=3.38.4"

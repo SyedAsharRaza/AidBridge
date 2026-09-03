@@ -44,18 +44,41 @@ class _SosScreenState extends ConsumerState<SosScreen> {
   void _pickCategory() {
     final s = ref.read(stringsProvider);
     final note = TextEditingController();
-    showModalBottomSheet(context: context, backgroundColor: AC.surface, showDragHandle: true,
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          TextField(controller: note, maxLength: kMaxTextLen, maxLines: 2,
-              decoration: InputDecoration(labelText: s.noteOpt)),
-          const SizedBox(height: 12),
-          _catTile(ctx, s, SosCategory.medical, note), _catTile(ctx, s, SosCategory.waterFood, note),
-          _catTile(ctx, s, SosCategory.rescue, note), _catTile(ctx, s, SosCategory.custom, note),
-        ]),
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AC.surface,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+            16,
+            0,
+            16,
+            24 + MediaQuery.of(ctx).viewInsets.bottom,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextField(
+                  controller: note,
+                  maxLength: kMaxTextLen,
+                  maxLines: 2,
+                  decoration: InputDecoration(labelText: s.noteOpt),
+                ),
+                const SizedBox(height: 12),
+                _catTile(ctx, s, SosCategory.medical, note),
+                _catTile(ctx, s, SosCategory.waterFood, note),
+                _catTile(ctx, s, SosCategory.rescue, note),
+                _catTile(ctx, s, SosCategory.custom, note),
+              ],
+            ),
+          ),
+        ),
       ),
-    ).whenComplete(note.dispose); // one controller per attempt — do not leak it
+    ).whenComplete(note.dispose);
   }
 
   Widget _catTile(BuildContext ctx, S s, SosCategory c, TextEditingController note) => Padding(

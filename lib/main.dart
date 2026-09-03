@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'app/mesh.dart';
@@ -9,6 +10,10 @@ import 'package:firebase_core/firebase_core.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setEnabledSystemUIMode(
+    SystemUiMode.manual,
+    overlays: [SystemUiOverlay.top],
+  );
   if (Firebase.apps.isEmpty) await Firebase.initializeApp(); 
   final container = ProviderContainer();
   await container.read(identityProvider.notifier).load(); // identity BEFORE routes: no auth flapping
