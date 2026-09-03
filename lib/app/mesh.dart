@@ -91,6 +91,15 @@ class IdentityStore extends StateNotifier<MeshIdentity?> {
     return orgName;
   }
 
+  Future<void> signOutNgo() async {
+    await fb.FirebaseAuth.instance.signOut();
+    final p = await SharedPreferences.getInstance();
+    await p.setString('role', 'civilian');
+    await p.remove('ngoUid');
+    state = MeshIdentity(state?.selfId ?? '', state?.name ?? '', state?.phone,
+      role: 'civilian', onboarded: true, ngoUid: null);
+  }
+
   Future<void> _save({String? name, String? phone, String? role, bool? onboarded}) async {
     if (state == null) return;
     final p = await SharedPreferences.getInstance();

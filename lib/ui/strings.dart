@@ -185,6 +185,9 @@ class S {
   String get passwordResetFailed => _p('Could not update password. Try again.', 'پاسورڈ اپ ڈیٹ نہیں ہو سکا۔ دوبارہ کوشش کریں۔');
   String get wrongCurrentPassword => _p('Current password is incorrect.', 'موجودہ پاسورڈ غلط ہے۔');
   String get notSignedIn => _p('You are not signed in.', 'آپ سائن ان نہیں ہیں۔');
+  String get signedInAsNgo => _p('Signed in as NGO', 'این جی او کے طور پر سائن ان ہیں');
+  String get signOut => _p('Sign out', 'سائن آؤٹ');
+  String get signInAsNgo => _p('Sign in as NGO', 'این جی او کے طور پر سائن ان کریں');
 }
 
 String timeAgo(int epochSec, {bool ur = false}) {
