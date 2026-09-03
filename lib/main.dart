@@ -12,6 +12,8 @@ Future<void> main() async {
   if (Firebase.apps.isEmpty) await Firebase.initializeApp(); 
   final container = ProviderContainer();
   await container.read(identityProvider.notifier).load(); // identity BEFORE routes: no auth flapping
+  await container.read(bridgeProvider).init();                                          // NEW
+  container.read(bridgeReadyProvider.notifier).state = container.read(bridgeProvider).ready;
   runApp(UncontrolledProviderScope(container: container, child: const AidBridgeApp()));
 }
 

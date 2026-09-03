@@ -1,3 +1,4 @@
+import 'package:aidbridge/ui/ngo_change_password.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -69,37 +70,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           Text('radio ID: ${id?.selfId ?? "—"}', style: const TextStyle(color: AC.mute, fontSize: 12)),
         ]),
       ),
-      const SizedBox(height: 12),
-      Row(children: [
-        Text('${s.role}: ', style: const TextStyle(color: AC.dim)),
-        const SizedBox(width: 8),
-        Expanded(child: DropdownButtonFormField<String>(
-          initialValue: id?.role ?? 'civilian',
-          decoration: const InputDecoration(),
-          items: [DropdownMenuItem(value: 'civilian', child: Text(s.civilian)),
-            DropdownMenuItem(value: 'ngo', child: Text(s.ngo))],
-          onChanged: (v) async {
-            if (v == null || v == id?.role) return;
-            final router = GoRouter.of(context); // captured BEFORE the await gap
-            // LAW: role change = FULL STOP, swap identity, re-route (the target shell
-            // restarts the mesh in its initState => clean 8009 re-handshake).
-            await ref.read(meshProvider.notifier).stop();
-            await ref.read(identityProvider.notifier).setRole(v);
-            router.go(v == 'ngo' ? '/ngo' : '/civilian');
-          },
-        )),
-      ]),
-      const SizedBox(height: 12),
-      Row(children: [
-        Text('${s.language}: ', style: const TextStyle(color: AC.dim)),
-        const SizedBox(width: 8),
-        Expanded(child: DropdownButtonFormField<AppLang>(
-          initialValue: ref.watch(localeProvider),
-          items: const [DropdownMenuItem(value: AppLang.en, child: Text('English')),
-            DropdownMenuItem(value: AppLang.ur, child: Text('اردو'))],
-          onChanged: (v) { if (v != null) ref.read(localeProvider.notifier).set(v); },
-        )),
-      ]),
+      Text('${s.role}: ${id?.role == 'ngo' ? s.ngo : s.civilian}',
+        style: const TextStyle(color: AC.dim)),
       const SizedBox(height: 12),
       OutlinedButton.icon(
         style: OutlinedButton.styleFrom(side: const BorderSide(color: AC.border), minimumSize: const Size.fromHeight(kMinTarget)),
